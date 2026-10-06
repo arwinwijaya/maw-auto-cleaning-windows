@@ -1,0 +1,39 @@
+{
+  "nextId": 4,
+  "tasks": [
+    {
+      "id": "1",
+      "subject": "Build cleanup target registry and engine",
+      "description": "Create server-side allowlisted target registry with safe path containment, symlink/reparse protection, age filtering, dry-run preview, per-file failure handling, empty child dir removal, cancellation, and same-target concurrency guards.",
+      "status": "completed",
+      "activeForm": "Writing cleanup targets and safe-path helpers",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1791199437876,
+      "updatedAt": 1791199807839
+    },
+    {
+      "id": "2",
+      "subject": "Add cleanup preview and job APIs",
+      "description": "Add preview/execute/job APIs using only registered target IDs plus confirmation tokens, CSRF-safe POST-only destructive routes, audit logging, progress + cancellation, and concurrency guards.",
+      "status": "pending",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1791199442961,
+      "updatedAt": 1791199442961
+    },
+    {
+      "id": "3",
+      "subject": "Map UI selectors/strings and extend cards + summary",
+      "description": "Enhance existing result cards with selection checkboxes; add potential-reclaim summary and the map of required selectors/modals/strings to unblock implementation.",
+      "status": "pending",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1791199445222,
+      "updatedAt": 1791199445222
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+.git
+.gitignore
+node_modules
+npm-debug.log
+docs
+tests
+tmp
+.tmpcheck
+nul
+*.md
+.env
+Dockerfile
+docker-compose.yml
+.dockerignore

@@ -1,0 +1,9 @@
+nul
+.env
+.env.local
+node_modules/
+*.log
+.scan.json
+.scan.txt
+*.tmp
+.tmpcheck/

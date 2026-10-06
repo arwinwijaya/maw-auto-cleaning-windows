@@ -1,0 +1,112 @@
+# Cleanup Web Scanner — Docker Compose (Linux containers)
+#
+# Usage:
+#   1. Copy .env.example to .env.
+#   2. docker compose up --build
+#   3. Open http://127.0.0.1:3456/
+#
+# SAFETY MODEL
+# ------------
+#   * Host drives are mounted READ-ONLY for scanning (/mnt/c, /mnt/d).
+#   * Cleanup targets are mounted READ-WRITE under /cleanup/<target-id>, but
+#     ONLY the directories you explicitly approve via .env. The client never
+#     supplies a path — it only sends a registered target ID, which the backend
+#     resolves to the fixed internalPath (see lib/cleanup-targets.js).
+#   * By DEFAULT every /cleanup/* mount points at ./test-data/<target>, so the
+#     stack is safe to start out of the box. Point a variable at a real cache
+#     only when you have reviewed it.
+#
+# Approve a real directory by setting the matching variable in .env, e.g.:
+#   CLEANUP_LOCAL_TEMP=C:\Users\you\AppData\Local\Temp
+#   CLEANUP_CHROME_CACHE=C:\Users\you\AppData\Local\Google\Chrome\User Data\Default\Cache
+
+services:
+  scanner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cleanup-web-scanner:latest
+    container_name: cleanup-web-scanner
+    restart: unless-stopped
+    ports:
+      # Bind to localhost only: the UI is not exposed to the network.
+      - "127.0.0.1:3456:3456"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3456
+      # Remap C:\... and D:\... whitelist paths onto the read-only bind mounts.
+      SCAN_HOST_MOUNT: '{"c":"/mnt/c","d":"/mnt/d"}'
+      SCAN_TIMEOUT_MS: 180000
+      # Used to locate the current user's %LOCALAPPDATA%\Temp inside the mount.
+      LOCALAPPDATA: C:\Users\${HOST_USER:-${USERNAME}}\AppData\Local
+      # Audit log lives on the container tmpfs, never on a host mount.
+      CLEANUP_AUDIT_FILE: /tmp/cleanup-audit.jsonl
+    volumes:
+      # --- Scan mounts (READ-ONLY) ---
+      - type: bind
+        source: C:\
+        target: /mnt/c
+        read_only: true
+      - type: bind
+        source: ${D_DRIVE_SOURCE:-D:\}
+        target: /mnt/d
+        read_only: true
+
+      # --- Cleanup mounts (READ-WRITE, opt-in) ---
+      # Each source defaults to ./test-data/<target>. Override in .env to point
+      # at a real, reviewed cache directory. A missing source makes Docker fail
+      # to start, so keep the default test-data directories or create yours.
+      - type: bind
+        source: ${CLEANUP_LOCAL_TEMP:-./test-data/local-temp}
+        target: /cleanup/local-temp
+        read_only: false
+      - type: bind
+        source: ${CLEANUP_WINDOWS_TEMP:-./test-data/windows-temp}
+        target: /cleanup/windows-temp
+        read_only: false
+      - type: bind
+        source: ${CLEANUP_D_TEMP:-./test-data/d-temp}
+        target: /cleanup/d-temp
+        read_only: false
+      - type: bind
+        source: ${CLEANUP_NPM_CACHE:-./test-data/npm-cache}
+        target: /cleanup/npm-cache
+        read_only: false
+      - type: bind
+        source: ${CLEANUP_UV_CACHE:-./test-data/uv-cache}
+        target: /cleanup/uv-cache
+        read_only: false
+      - type: bind
+        source: ${CLEANUP_PIP_CACHE:-./test-data/pip-cache}
+        target: /cleanup/pip-cache
+        read_only: false
+      - type: bind
+        source: ${CLEANUP_CHROME_CACHE:-./test-data/chrome-cache}
+        target: /cleanup/chrome-cache
+        read_only: false
+      - type: bind
+        source: ${CLEANUP_EDGE_CACHE:-./test-data/edge-cache}
+        target: /cleanup/edge-cache
+        read_only: false
+      - type: bind
+        source: ${CLEANUP_DIRECTX_CACHE:-./test-data/directx-cache}
+        target: /cleanup/directx-cache
+        read_only: false
+      - type: bind
+        source: ${CLEANUP_CRASH_DUMPS:-./test-data/crash-dumps}
+        target: /cleanup/crash-dumps
+        read_only: false
+
+    # Container root filesystem is read-only; only /tmp and the reviewed
+    # /cleanup/* bind mounts are writable.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3456/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

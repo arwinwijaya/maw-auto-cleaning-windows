@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "task_id": "T4",
+  "task_name": "SSE scan streaming endpoint",
+  "cycle": 1,
+  "timestamp": "2026-10-06T00:00:00Z",
+  "reviewer_mode": "read-only",
+  "reviewer_config": "standard",
+  "stage_1": {
+    "status": "PASS",
+    "issues": [],
+    "concerns_addressed": [],
+    "assessment": "All SPEC COMPLIANCE deliverables verified:\n1. event:folder frames with JSON entry data — implementation writes `event: folder\\ndata: ${JSON.stringify(entry)}\\n\\n` per onProgress call; test confirms presence.\n2. Terminal event:done with full {entries, scannedAt, partial} — scanAll returns exactly this shape; done frame emitted.\n3. Disconnect aborts stream without error — res.on('close') triggers AbortController.abort(); raceDeadline races abort signal; route guards done write with !abortController.signal.aborted; test confirms no done after destroy, zero uncaught errors, server remains healthy.\n4. GET /api/scan fallback unchanged — route order places /api/scan/stream before /api/scan; /api/scan handler unmodified; existing scan tests all pass.\n5. Security headers/CSP preserved on SSE — writeHead spreads securityHeaders() alongside content-type text/event-stream; CSP test suite passes.\n6. No new dependencies, no WebSockets — only vanilla Node http/fs/promises used; package.json unchanged.\n7. access_denied/partial entries keep status and reason — makeEntry includes reason for these statuses; entries streamed as-is.\n8. Frame shape stable for T7 — event:folder / event:done with documented JSON payloads; T7 execution plan references parsing these frames."
+  },
+  "stage_2": {
+    "status": "PASS",
+    "strengths": [
+      "Clean abort plumbing: AbortController wired through context.abortSignal → raceDeadline → walkFolder timeout path, with listener cleanup in finally blocks",
+      "Real-filesystem fixture test validates full contract (headers, folder frames, done payload shape)",
+      "Abort test uses hanging fs stub to verify cleanup without relying on timing; asserts readdirCount==1, no done, no uncaught errors, server health",
+      "Frame format matches EventSource standard and T7 client expectations",
+      "Conventional commit with clear message"
+    ],
+    "issues": [],
+    "assessment": "Implementation meets all quality bar criteria. Tests written before implementation (per pocket workflow), both stream contract and abort cleanup tests present. All 32 existing tests pass. No regressions to /api/scan. No external dependencies introduced. Zero listener leaks (onClose removed in finally). The abort path uses res.on('close') instead of req.on('close') — functionally equivalent for detecting client disconnect and marginally more robust."
+  },
+  "overall": "REVIEW_PASS",
+  "fix_instructions": "",
+  "loop_info": {
+    "current_cycle": 1,
+    "max_cycles": 2,
+    "cycles_remaining": 2
+  },
+  "reviewed_sha": "3822cb0dfeceacd8533cf353d13909a4fe2df1b6"
+}

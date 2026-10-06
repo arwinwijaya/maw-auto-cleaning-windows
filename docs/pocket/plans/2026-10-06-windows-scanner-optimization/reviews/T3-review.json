@@ -1,0 +1,57 @@
+{
+  "task_id": "T3",
+  "task_name": "Profile resolution hardening + fallback marker",
+  "cycle": 1,
+  "timestamp": "2026-10-06T12:30:00.000Z",
+  "reviewer_mode": "read-only",
+  "reviewer_config": "batch-parallel",
+  "stage_1": {
+    "status": "PASS",
+    "issues": [],
+    "concerns_addressed": [
+      "Fallback field name/contract fallback:true vs usedFallback internal correctly separated and documented",
+      "Docker applyHostMount/toContainerPath preserved"
+    ]
+  },
+  "stage_2": {
+    "status": "PASS",
+    "strengths": [
+      "Clean DI for testability server.js:305-307 options.resolveUserPaths and lib/resolve-temp.js:62 queryFn injection without breaking default execFile path",
+      "Minimal, surgical diff (91 lines) preserving existing patterns applyHostMount/toDisplayPath/parseHostMount",
+      "Strict equality folder.fallback===true avoids truthy leakage server.js:241",
+      "Env cleanup in tests via try/finally restores SCAN_HOST_MOUNT, HOST_USER, LOCALAPPDATA correctly",
+      "Error handling preserves read-only guarantee: registry throw caught, resolve(null) on execFile error, no throw on fallback path"
+    ],
+    "issues": [
+      {
+        "severity": "Important",
+        "description": "server.js:756 file >300 lines, server.js:281 getWhitelist ~70 lines and server.js:355 walkFolder ~60 lines exceed 50-line function guideline — pre-existing baseline 753 lines (e554bcd), not introduced by T3 (diff +3/-2). No new split required for this packet; note for future refactor.",
+        "location": "server.js:1, server.js:281, server.js:355"
+      },
+      {
+        "severity": "Minor",
+        "description": "Magic literal C:\\Temp duplicated lib/resolve-temp.js:77 and lib/resolve-temp.js:79 (and server.js:308 default userLocal). Could be const FALLBACK_TEMP='C:\\\\Temp' — low risk, readability only.",
+        "location": "lib/resolve-temp.js:77"
+      },
+      {
+        "severity": "Minor",
+        "description": "Contract duality: getWhitelist whitelist entries carry fallback:false explicitly while makeEntry scan entries omit fallback when false (server.js:241 vs server.js:314). Allowed per spec 'or false' but should be documented in JSDoc/comments to avoid UI confusion.",
+        "location": "server.js:238, server.js:314"
+      },
+      {
+        "severity": "Minor",
+        "description": "Unused packet open question risk noted — packet mentions space/domain/fallback shapes; domain case not explicitly tested but covered by registry pass-through queryLocalAppData forwarding match[1].trim() lib/resolve-temp.js:46 which preserves domain prefix if present.",
+        "location": "lib/resolve-temp.js:43-46"
+      }
+    ],
+    "assessment": "Approved"
+  },
+  "overall": "REVIEW_PASS",
+  "fix_instructions": "",
+  "loop_info": {
+    "current_cycle": 1,
+    "max_cycles": 2,
+    "cycles_remaining": 2
+  },
+  "reviewed_sha": "4c2bf549504835d71f3f9f3be5303598c1230ff3"
+}

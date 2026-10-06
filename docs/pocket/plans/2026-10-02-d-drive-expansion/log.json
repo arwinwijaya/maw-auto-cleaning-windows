@@ -1,0 +1,48 @@
+{
+  "header": {
+    "plan_dir": "docs/pocket/plans/2026-10-02-d-drive-expansion",
+    "plan_type": "flat",
+    "status": "DONE",
+    "date_started": "2026-10-05",
+    "date_completed": "2026-10-05",
+    "baseline_sha": "7854f233d8ebb5d45a527310e7f040cee14af0c7",
+    "pipeline": 4
+  },
+  "phases": [
+    {
+      "order": 1,
+      "file": "execution-plan/index.md",
+      "status": "DONE",
+      "tasks": [
+        {
+          "id": "T1",
+          "name": "Establish multi-drive remapping and whitelist",
+          "file": "execution-plan/tasks/T1-establish-multi-drive-remapping-and-whitelist.md",
+          "status": "DONE",
+          "done_sha": "e7d3c4210774f7a4a0ec0bbe9586bceb4f801a0c"
+        },
+        {
+          "id": "T2",
+          "name": "Provide safe program guidance",
+          "file": "execution-plan/tasks/T2-provide-safe-program-guidance.md",
+          "status": "DONE",
+          "done_sha": "ded89f3d9882bd80bf780c01841a34a2d164e192"
+        },
+        {
+          "id": "T3",
+          "name": "Add read-only Docker D: mount",
+          "file": "execution-plan/tasks/T3-add-read-only-docker-d-mount.md",
+          "status": "DONE",
+          "done_sha": "b4783719b330e393e06b1734bb9a93e29b847c25"
+        },
+        {
+          "id": "T4",
+          "name": "Verify missing-drive API behavior and document configuration",
+          "file": "execution-plan/tasks/T4-verify-missing-drive-api-behavior-and-document-configuration.md",
+          "status": "DONE",
+          "done_sha": "d1d7e9d0e073e1d25ce8bdef2dbe49d002314b54"
+        }
+      ]
+    }
+  ]
+}

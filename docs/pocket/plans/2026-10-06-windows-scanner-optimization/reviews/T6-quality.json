@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "task_id": "T6-quality",
+  "task_name": "UI fallback exemption badge — Stage 2 quality audit",
+  "cycle": 1,
+  "timestamp": "2026-10-06T07:00:00Z",
+  "reviewer_mode": "read-only",
+  "reviewer_config": "batch-parallel",
+  "stage_1": {
+    "status": "PASS",
+    "issues": [],
+    "concerns_addressed": [
+      "Prior T6 verdict exists, parses, and records Stage 1 PASS for the exact reviewed SHA.",
+      "Commit diff fulfills the specified fallback badge and filtering behavior without changes outside public/app.js and tests/public.test.js."
+    ]
+  },
+  "stage_2": {
+    "status": "PASS",
+    "strengths": [
+      "Exemption uses strict entry.fallback === true semantics (and !== true in the filter), so truthy non-boolean values cannot exempt non-fallback entries.",
+      "Fallback badge is added once in renderCard only for a strict true marker; it includes the requested copy plus role=note, aria-label, and title.",
+      "Hidden not_found count increments only for entries actually filtered by hideNotFound, excluding fallback entries; existing T5 hideNotFound/hideZero ordering and access_denied/partial exceptions remain intact.",
+      "Integration tests exercise fallback visibility and badge accessibility, hidden-count exclusion, and continued hiding of non-fallback entries; tests are deterministic and use the existing fake DOM/fetch harness.",
+      "Verified node --test tests/public.test.js: all 39 tests pass, including T5 and T6 cases.",
+      "Fallback Windows path is correctly escaped in JavaScript source as C:\\Temp."
+    ],
+    "issues": [],
+    "assessment": "Approved"
+  },
+  "overall": "REVIEW_PASS",
+  "fix_instructions": "",
+  "loop_info": {
+    "current_cycle": 1,
+    "max_cycles": 2,
+    "cycles_remaining": 2
+  },
+  "reviewed_sha": "9fbdc1eb89d35c923f353cc055b63074e467bc45"
+}

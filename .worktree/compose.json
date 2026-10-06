@@ -1,0 +1,127 @@
+{
+  "name": "auto-cleaning",
+  "networks": {
+    "default": {
+      "name": "auto-cleaning_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "scanner": {
+      "build": {
+        "context": "D:\\Development\\devops\\auto-cleaning",
+        "dockerfile": "Dockerfile"
+      },
+      "command": null,
+      "container_name": "cleanup-web-scanner",
+      "entrypoint": null,
+      "environment": {
+        "CLEANUP_AUDIT_FILE": "/tmp/cleanup-audit.jsonl",
+        "HOST": "0.0.0.0",
+        "LOCALAPPDATA": "C:\\Users\\muhamad.arwinwijaya\\AppData\\Local",
+        "PORT": "3456",
+        "SCAN_HOST_MOUNT": "{\"c\":\"/mnt/c\",\"d\":\"/mnt/d\"}",
+        "SCAN_TIMEOUT_MS": "180000"
+      },
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "wget",
+          "-q",
+          "-O",
+          "/dev/null",
+          "http://127.0.0.1:3456/"
+        ],
+        "timeout": "5s",
+        "interval": "30s",
+        "retries": 3,
+        "start_period": "5s"
+      },
+      "image": "cleanup-web-scanner:latest",
+      "networks": {
+        "default": null
+      },
+      "ports": [
+        {
+          "mode": "ingress",
+          "host_ip": "127.0.0.1",
+          "target": 3456,
+          "published": "3456",
+          "protocol": "tcp"
+        }
+      ],
+      "read_only": true,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "tmpfs": [
+        "/tmp"
+      ],
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "C:\\",
+          "target": "/mnt/c",
+          "read_only": true
+        },
+        {
+          "type": "bind",
+          "source": "D:\\",
+          "target": "/mnt/d",
+          "read_only": true
+        },
+        {
+          "type": "bind",
+          "source": "D:\\Development\\devops\\auto-cleaning\\test-data\\local-temp",
+          "target": "/cleanup/local-temp"
+        },
+        {
+          "type": "bind",
+          "source": "D:\\Development\\devops\\auto-cleaning\\test-data\\windows-temp",
+          "target": "/cleanup/windows-temp"
+        },
+        {
+          "type": "bind",
+          "source": "D:\\Development\\devops\\auto-cleaning\\test-data\\d-temp",
+          "target": "/cleanup/d-temp"
+        },
+        {
+          "type": "bind",
+          "source": "D:\\Development\\devops\\auto-cleaning\\test-data\\npm-cache",
+          "target": "/cleanup/npm-cache"
+        },
+        {
+          "type": "bind",
+          "source": "D:\\Development\\devops\\auto-cleaning\\test-data\\uv-cache",
+          "target": "/cleanup/uv-cache"
+        },
+        {
+          "type": "bind",
+          "source": "D:\\Development\\devops\\auto-cleaning\\test-data\\pip-cache",
+          "target": "/cleanup/pip-cache"
+        },
+        {
+          "type": "bind",
+          "source": "D:\\Development\\devops\\auto-cleaning\\test-data\\chrome-cache",
+          "target": "/cleanup/chrome-cache"
+        },
+        {
+          "type": "bind",
+          "source": "D:\\Development\\devops\\auto-cleaning\\test-data\\edge-cache",
+          "target": "/cleanup/edge-cache"
+        },
+        {
+          "type": "bind",
+          "source": "D:\\Development\\devops\\auto-cleaning\\test-data\\directx-cache",
+          "target": "/cleanup/directx-cache"
+        },
+        {
+          "type": "bind",
+          "source": "D:\\Development\\devops\\auto-cleaning\\test-data\\crash-dumps",
+          "target": "/cleanup/crash-dumps"
+        }
+      ]
+    }
+  }
+}

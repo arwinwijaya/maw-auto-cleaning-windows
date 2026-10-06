@@ -1,0 +1,43 @@
+{
+  "task_id": "T4",
+  "task_name": "Verify missing-drive API behavior and document configuration",
+  "cycle": 1,
+  "timestamp": "2026-10-05T18:30:00Z",
+  "reviewer_mode": "read-only",
+  "reviewer_config": "batch-parallel",
+  "stage_1": {
+    "status": "PASS",
+    "issues": [],
+    "concerns_addressed": []
+  },
+  "stage_2": {
+    "status": "PASS",
+    "strengths": [
+      "Test directly implements the exact GWT scenario from DELIVERABLE: 'Given D: absent at scanner filesystem level When scan occurs Then D: entries not_found and C: entries unaffected'",
+      "Test uses existing createFsStub pattern with ENOENT for missing D: roots while C: root resolves to real directory — realistic simulation",
+      "All assertions precise: C: entry status=ready, fileCount=1, sizeBytes=5; D: entries status=not_found, fileCount=0, sizeBytes=0; body.partial=false",
+      "README documentation clearly specifies: multi-drive SCAN_HOST_MOUNT JSON format, optional D: bind mount, D:-less host behavior (not_found, not partial), and app no-delete policy for 'app' group folders",
+      "No fabricated RED test — the test is a real passing test exercising actual behavior",
+      "Zero scope creep — changes limited to tests/server.test.js (one new test) and README.md (documentation updates) exactly as specified",
+      "All 77 tests pass including the new regression test",
+      "README satisfies must-not-have: it does NOT claim a mandatory D: mount works on D:-less hosts; it explicitly states a required D: mount would fail and keeps it optional"
+    ],
+    "issues": [
+      {
+        "severity": "Minor",
+        "description": "README.md:30 states 'Hanya 15 path whitelist yang dibaca' (in C: mount context) while total whitelist is 18; wording is ambiguous — could clarify as '15 C: paths via /mnt/c' or update to 18 for consistency with lines 52/63",
+        "location": "README.md:30"
+      }
+    ],
+    "assessment": "Approved"
+  },
+  "overall": "REVIEW_PASS",
+  "fix_instructions": "",
+  "loop_info": {
+    "current_cycle": 1,
+    "max_cycles": 2,
+    "cycles_remaining": 2
+  },
+  "merge_recovery_consumed": false,
+  "reviewed_sha": "d1d7e9d0e073e1d25ce8bdef2dbe49d002314b54"
+}
