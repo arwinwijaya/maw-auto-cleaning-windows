@@ -1,0 +1,91 @@
+{
+  "header": {
+    "plan_dir": "docs/pocket/plans/2026-10-07-disk-usage-analyzer",
+    "plan_type": "phased",
+    "status": "IN_PROGRESS",
+    "date_started": "2026-10-07",
+    "date_completed": null,
+    "baseline_sha": "086dfc934a0683367f5ad0c0a8b334fa74fc9441",
+    "pipeline": 4,
+    "plan_file": "execution-plan/index.md"
+  },
+  "phases": [
+    {
+      "order": 1,
+      "file": "execution-plan/phase-1.md",
+      "status": "DONE",
+      "tasks": [
+        {
+          "id": "T1",
+          "name": "Audit recursive walk, aggregation, deadlines, partials",
+          "status": "DONE",
+          "file": "execution-plan/tasks/T1-audit-recursive-walk-aggregation-deadlines-partials.md",
+          "done_sha": "6c302dc1b78b3563ad5e0497dcd19172e9f42534"
+        },
+        {
+          "id": "T2",
+          "name": "Audit concurrency helper mapLimit",
+          "status": "DONE",
+          "depends": "T1",
+          "file": "execution-plan/tasks/T2-audit-concurrency-helper-maplimit.md",
+          "done_sha": "9eade6723f931e90c04a24e5d671317a0b98f7c1"
+        },
+        {
+          "id": "T3",
+          "name": "Audit opaque node registry",
+          "status": "DONE",
+          "depends": "T1",
+          "file": "execution-plan/tasks/T3-audit-opaque-node-registry.md",
+          "done_sha": "2efef98315bcb02c8d733d65c58d7ac044f0e0d8"
+        },
+        {
+          "id": "T4",
+          "name": "Audit classification rules and guides",
+          "status": "DONE",
+          "depends": "T1",
+          "file": "execution-plan/tasks/T4-audit-classification-rules-and-guides.md",
+          "done_sha": "df9cd5cf24e1109eafc01a0ebf4a59604aad831f"
+        },
+        {
+          "id": "T5",
+          "name": "Audit HTTP/SSE API contracts and read-only routes",
+          "status": "DONE",
+          "depends": "T1",
+          "file": "execution-plan/tasks/T5-audit-http-sse-api-contracts-and-read-only-routes.md",
+          "done_sha": "4eee5e5678f82800b7abee056440ca6ad73ec26e"
+        }
+      ]
+    },
+    {
+      "order": 2,
+      "file": "execution-plan/phase-2.md",
+      "status": "WAITING",
+      "tasks": [
+        {
+          "id": "T6",
+          "name": "Audit frontend UI behaviors",
+          "status": "DONE",
+          "depends": "T5",
+          "file": "execution-plan/tasks/T6-audit-frontend-ui-behaviors.md",
+          "done_sha": "e215cccdd752f43a4d0d1cbc483ccfc3c260383b"
+        },
+        {
+          "id": "T7",
+          "name": "Audit read-only/Docker/security posture",
+          "status": "DONE",
+          "depends": "T5",
+          "file": "execution-plan/tasks/T7-audit-read-only-docker-security-posture.md",
+          "done_sha": "1069a7c987b70f37447f06219a9b2feb61762e2c"
+        },
+        {
+          "id": "T8",
+          "name": "Independent spec review and plan verification",
+          "status": "DONE",
+          "depends": "T2, T3, T4, T5, T6, T7",
+          "file": "execution-plan/tasks/T8-independent-spec-review-and-plan-verification.md",
+          "done_sha": "dfd9fdf5206c62c1de46963ac24c338b6957f61d"
+        }
+      ]
+    }
+  ]
+}

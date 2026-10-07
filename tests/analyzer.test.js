@@ -184,6 +184,14 @@ test('a hanging filesystem call is released immediately on abort', async (t) => 
   assert.equal(result.root.reason, 'aborted');
 });
 
+test('classify returns unknown fallback for unmatched display paths', () => {
+  const result = classify('D:\\Random\\SomeFolder\\data.bin');
+  assert.equal(result.risk, 'unknown');
+  assert.equal(result.category, 'unknown');
+  assert.equal(result.guideId, null);
+  assert.equal(result.reason, 'Tidak ada aturan klasifikasi yang diverifikasi.');
+});
+
 test('percentOf rounds to one decimal and guards zero totals', () => {
   assert.equal(percentOf(3000, 4600), 65.2);
   assert.equal(percentOf(5, 0), 0);

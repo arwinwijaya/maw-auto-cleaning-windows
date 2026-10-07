@@ -156,6 +156,74 @@ test('HTTP API configured unavailable root remains listed and reports not_found 
   assert.equal(statusRes.body.error, 'not_found');
 });
 
+test('HTTP API treemap works during active scan and rejects unknown node selector', async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'dua-treemap-live-'));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+
+  fs.writeFileSync(path.join(base, 'file.txt'), Buffer.alloc(150));
+
+  let releaseWalk;
+  const walkGate = new Promise((resolve) => { releaseWalk = resolve; });
+  const realReaddir = fs.promises.readdir.bind(fs.promises);
+  const gatingFs = {
+    lstat: fs.promises.lstat.bind(fs.promises),
+    readdir: async (p, opts) => {
+      await walkGate;
+      return realReaddir(p, opts);
+    },
+  };
+
+  const roots = [{ id: 'test-root', name: 'Test Root', path: base, displayPath: 'C:\\Test' }];
+  const server = createServer({ scanRoots: JSON.stringify(roots), fs: gatingFs });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+
+  const rootsRes = await request(server, 'GET', '/api/roots');
+  const rootId = rootsRes.body.roots[0].id;
+
+  const startRes = await request(server, 'POST', '/api/scans', { rootId });
+  const scanId = startRes.body.scanId;
+
+  // 1. Request treemap while scan is active (status === 'scanning').
+  const treemapRes = await request(server, 'GET', `/api/scans/${scanId}/treemap?node=root`);
+  assert.equal(treemapRes.status, 200);
+  assert.equal(treemapRes.body.status, 'scanning');
+  assert.equal(treemapRes.body.partial, true);
+
+  // 2. Request treemap with invalid/unknown node id -> 404 Node tidak ditemukan.
+  const badNodeRes = await request(server, 'GET', `/api/scans/${scanId}/treemap?node=nonexistent-id-12345`);
+  assert.equal(badNodeRes.status, 404);
+  assert.equal(badNodeRes.body.error, 'Node tidak ditemukan.');
+
+  releaseWalk();
+});
+
+test('HTTP API rejects a client-supplied filesystem path as a root selector', async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'dua-path-reject-'));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+
+  const roots = [{ id: 'test-root', name: 'Test Root', path: base, displayPath: 'C:\\Test' }];
+  const server = createServer({ scanRoots: JSON.stringify(roots) });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+
+  // A raw filesystem path must never be accepted in place of a server-issued id.
+  for (const rootId of [base, 'C:\\Windows\\System32', '\\\\server\\share']) {
+    const res = await request(server, 'POST', '/api/scans', { rootId });
+    assert.equal(res.status, 400, `path selector ${rootId} must be rejected`);
+    assert.equal(res.body.error, 'Root tidak dikenal.');
+  }
+
+  // An arbitrary path used as a tree node selector must also be rejected.
+  const rootsRes = await request(server, 'GET', '/api/roots');
+  const startRes = await request(server, 'POST', '/api/scans', { rootId: rootsRes.body.roots[0].id });
+  assert.equal(startRes.status, 202);
+  const scanId = startRes.body.scanId;
+  const nodeRes = await request(server, 'GET', `/api/scans/${scanId}/tree/${encodeURIComponent('C:\\Windows\\System32')}`);
+  assert.equal(nodeRes.status, 404);
+  assert.equal(nodeRes.body.error, 'Node tidak ditemukan.');
+});
+
 test('HTTP API rejects cross-origin state-changing request', async (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'dua-http-origin-'));
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
