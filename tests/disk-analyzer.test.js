@@ -98,6 +98,13 @@ test('HTTP API progressive scan and cancellation', async (t) => {
   assert.equal(treeRes.body.parent.fileCount, 1);
   assert.equal(treeRes.body.driveTotalBytes, 100);
 
+  const treemapRes = await request(server, 'GET', `/api/scans/${scanId}/treemap?node=root`);
+  assert.equal(treemapRes.status, 200);
+  assert.equal(treemapRes.body.status, 'scanning');
+  assert.equal(treemapRes.body.partial, true);
+  assert.equal(treemapRes.body.driveTotalBytes, 100);
+  assert.ok(treemapRes.body.nodes.some((node) => node.name === 'fast.txt' && node.sizeBytes === 100));
+
   // 3. Cancel while the sibling read is still held open.
   const cancelRes = await request(server, 'POST', `/api/scans/${scanId}/cancel`);
   assert.equal(cancelRes.status, 202);
@@ -190,8 +197,8 @@ test('HTTP API treemap works during active scan and rejects unknown node selecto
   assert.equal(treemapRes.body.status, 'scanning');
   assert.equal(treemapRes.body.partial, true);
 
-  // 2. Request treemap with invalid/unknown node id -> 404 Node tidak ditemukan.
-  const badNodeRes = await request(server, 'GET', `/api/scans/${scanId}/treemap?node=nonexistent-id-12345`);
+  // 2. A raw path is not a registered node id (even if it exists on disk).
+  const badNodeRes = await request(server, 'GET', `/api/scans/${scanId}/treemap?node=${encodeURIComponent(base)}`);
   assert.equal(badNodeRes.status, 404);
   assert.equal(badNodeRes.body.error, 'Node tidak ditemukan.');
 

@@ -24,6 +24,7 @@ function createElementStub() {
     appendChild: () => {},
     querySelectorAll: () => [],
     closest: () => null,
+    remove: () => {},
   };
   return node;
 }
@@ -211,18 +212,17 @@ test('frontend: renderTree expands/collapses children via state.expanded', async
   assert.ok(!html.includes('sub'));
 });
 
-test('frontend: wireGuideCopy copies command text via clipboard and toasts success', async () => {
+test('frontend: wireGuideCopy copies command text via clipboard without executing it', async () => {
   const stub = createDOMStub();
-  let copiedText = null;
-  stub.window.navigator.clipboard.writeText = async (text) => { copiedText = text; };
-  const { wireGuideCopy, state } = loadApp(stub, ['wireGuideCopy', 'state']);
+  const copied = [];
+  stub.window.navigator.clipboard.writeText = async (text) => { copied.push(text); };
+  const { wireGuideCopy } = loadApp(stub, ['wireGuideCopy']);
 
-  // Create fake buttons with the same API as querySelectorAll('[data-copy]').
-  const buttons = ['del /q test', 'Remove-Item test'].map((cmd) => {
-    const el = { dataset: { copy: cmd }, addEventListener: (type, handler) => { el._handler = handler; } };
-    return el;
+  const commands = ['del /q test', 'Remove-Item test'];
+  const buttons = commands.map((cmd) => {
+    const button = { dataset: { copy: cmd }, addEventListener: (type, handler) => { button._handler = handler; } };
+    return button;
   });
-
   const container = {
     querySelectorAll: (sel) => {
       assert.equal(sel, '[data-copy]');
@@ -231,13 +231,21 @@ test('frontend: wireGuideCopy copies command text via clipboard and toasts succe
   };
 
   wireGuideCopy(container);
-  // wireGuideCopy registers handlers only — it never executes a command itself.
-  assert.equal(buttons.length, 2);
   assert.ok(typeof buttons[0]._handler === 'function', 'click handler registered');
+  assert.ok(typeof buttons[1]._handler === 'function', 'click handler registered');
 
-  // Click first copy button: must copy its text to clipboard, no exec.
+  // Copy is the only side effect: the exact command text lands on the clipboard.
   await buttons[0]._handler();
-  assert.equal(copiedText, 'del /q test');
+  assert.deepEqual(copied, ['del /q test']);
+  await buttons[1]._handler();
+  assert.deepEqual(copied, ['del /q test', 'Remove-Item test']);
+
+  // Copy-only contract: the app never runs the command. No execution-capable
+  // global is reachable from the loaded app scope.
+  assert.equal(typeof stub.window.child_process, 'undefined');
+  assert.equal(typeof stub.window.exec, 'undefined');
+  assert.equal(typeof stub.window.spawn, 'undefined');
+  assert.equal(typeof stub.window.require, 'undefined');
 });
 
 test('frontend: renderGuide renders copy buttons and commands', async () => {
