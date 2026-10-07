@@ -114,3 +114,43 @@ test('HTTP API progressive scan and cancellation', async (t) => {
 
   releaseSlow(); // Unblock so the process exits cleanly.
 });
+
+test('HTTP API configured unavailable root remains listed and reports not_found on scan', async (t) => {
+  const missingPath = path.join(os.tmpdir(), `dua-missing-root-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  
+  const scanRoots = JSON.stringify([{
+    name: 'Missing',
+    path: missingPath,
+    displayPath: 'M:\\'
+  }]);
+  
+  const server = createServer({ scanRoots });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+
+  // 1. GET /api/roots returns 200 and includes the configured missing root (no preflight existence check).
+  const rootsRes = await request(server, 'GET', '/api/roots');
+  assert.equal(rootsRes.status, 200);
+  const missingRoot = rootsRes.body.roots.find((r) => r.path === missingPath || r.displayPath === 'M:\\');
+  assert.ok(missingRoot, 'configured missing root must be listed in /api/roots');
+  assert.equal(missingRoot.name, 'Missing');
+  assert.equal(missingRoot.displayPath, 'M:\\');
+
+  // 2. Resolve the server-issued root id, then start a scan for it.
+  const rootId = missingRoot.id;
+  const startRes = await request(server, 'POST', '/api/scans', { rootId });
+  assert.equal(startRes.status, 202);
+  const scanId = startRes.body.scanId;
+
+  // 3. Poll until status === 'error' and error === 'not_found'.
+  let statusRes = null;
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    statusRes = await request(server, 'GET', `/api/scans/${scanId}/status`);
+    if (statusRes.body.status === 'error') break;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.equal(statusRes.status, 200);
+  assert.equal(statusRes.body.status, 'error');
+  assert.equal(statusRes.body.error, 'not_found');
+});
