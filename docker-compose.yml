@@ -3,7 +3,7 @@
 # Usage:
 #   1. Copy .env.example to .env.
 #   2. docker compose up --build
-#   3. Open http://127.0.0.1:3456/
+#   3. Open http://127.0.0.1:3457/
 #
 # SAFETY MODEL
 # ------------
@@ -22,7 +22,7 @@ services:
     restart: unless-stopped
     ports:
       # Bind to localhost only: the UI is not exposed to the network.
-      - "127.0.0.1:3456:3456"
+      - "127.0.0.1:3457:3456"
     environment:
       HOST: 0.0.0.0
       PORT: 3456
@@ -48,6 +48,8 @@ services:
       - no-new-privileges:true
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3456/"]
+      # NOTE: the published port was moved to 127.0.0.1:3457 because
+      # another local container already uses 127.0.0.1:3456.
       interval: 30s
       timeout: 5s
       retries: 3
