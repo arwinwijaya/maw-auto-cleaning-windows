@@ -248,6 +248,48 @@ test('progressive: completed sibling is visible in the live root before others f
   assert.equal(result.partial, false);
 });
 
+test('permission errors on a child directory are skipped and mark the subtree access_denied', async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'dua-perm-'));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(base, 'ok.txt'), Buffer.alloc(42));
+  fs.mkdirSync(path.join(base, 'denied'), { recursive: true });
+
+  // Characterization of baseline behavior (lib/analyzer.js walkDir catch, ~L139):
+  // a readdir that reports EACCES/EPERM marks that node partial with
+  // reason 'access_denied', counts one skip, and the walk continues.
+  for (const code of ['EACCES', 'EPERM']) {
+    const realReaddir = fs.promises.readdir.bind(fs.promises);
+    const deniedFs = {
+      lstat: fs.promises.lstat.bind(fs.promises),
+      readdir: async (p, opts) => {
+        if (String(p).endsWith(`${path.sep}denied`)) {
+          throw Object.assign(new Error(`${code}: permission denied`), { code });
+        }
+        return realReaddir(p, opts);
+      },
+    };
+
+    const result = await analyze(base, { fs: deniedFs, timeoutMs: 30000 });
+
+    // The unreadable entry is published as a partial node whose contents were skipped.
+    const denied = result.root.children.find((c) => c.name === 'denied');
+    assert.ok(denied, `${code}: denied entry must be published as a node`);
+    assert.equal(denied.partial, true, `${code}: denied subtree is partial`);
+    assert.equal(denied.reason, 'access_denied', `${code}: denied subtree reason`);
+    assert.equal(denied.children.length, 0, `${code}: denied contents must not be read`);
+
+    // The readable sibling still aggregates and the scan completes without crashing.
+    assert.ok(result.root.children.some((c) => c.name === 'ok.txt'), `${code}: readable sibling remains`);
+    assert.equal(result.totals.sizeBytes, 42, `${code}: readable bytes still counted`);
+    assert.equal(result.totals.fileCount, 1, `${code}: readable files still counted`);
+
+    // The access error propagates partial/access_denied to the root and counts one skip.
+    assert.equal(result.partial, true, `${code}: scan is partial`);
+    assert.equal(result.root.reason, 'access_denied', `${code}: root reason`);
+    assert.equal(result.skipped, 1, `${code}: exactly one entry skipped`);
+  }
+});
+
 test('progressive: hung root lstat still produces a partial tree instead of hanging', async (t) => {
   const hangingFs = {
     lstat: () => new Promise(() => {}),
