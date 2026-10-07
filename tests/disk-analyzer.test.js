@@ -9,7 +9,7 @@ const http = require('node:http');
 
 const { createServer } = require('../server.js');
 
-function request(server, method, pathname, body = null) {
+function request(server, method, pathname, body = null, extraHeaders = {}) {
   const addr = server.address();
   const port = addr.port;
   return new Promise((resolve, reject) => {
@@ -22,6 +22,7 @@ function request(server, method, pathname, body = null) {
       headers: {
         'content-type': 'application/json',
         ...(payload ? { 'content-length': Buffer.byteLength(payload) } : {}),
+        ...extraHeaders,
       },
     }, (res) => {
       let chunks = '';
@@ -153,4 +154,19 @@ test('HTTP API configured unavailable root remains listed and reports not_found 
   assert.equal(statusRes.status, 200);
   assert.equal(statusRes.body.status, 'error');
   assert.equal(statusRes.body.error, 'not_found');
+});
+
+test('HTTP API rejects cross-origin state-changing request', async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'dua-http-origin-'));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+
+  const roots = [{ id: 'test-root', name: 'Test Root', path: base, displayPath: 'C:\\Test' }];
+  const server = createServer({ scanRoots: JSON.stringify(roots) });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+
+  const res = await request(server, 'POST', '/api/scans', { rootId: 'test-root' }, { origin: 'http://evil.example' });
+
+  assert.equal(res.status, 403);
+  assert.equal(res.body.error, 'Origin tidak diizinkan.');
 });
