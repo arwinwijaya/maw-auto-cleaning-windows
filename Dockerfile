@@ -1,13 +1,14 @@
 # syntax=docker/dockerfile:1
 
-# Cleanup Web Scanner — read-only temp/cache scanner.
+# Disk Usage Analyzer — read-only WinDirStat-style disk analyzer.
 #
-# Runs the same Node.js server as before, but inside a Linux container. The
-# Windows whitelist paths are remapped onto a read-only bind mount of the host
-# drive (see docker-compose.yml + SCAN_HOST_MOUNT), so the UI keeps showing the
-# real `C:\...` paths while the process reads them through the mount.
+# Runs the Node.js server inside a Linux container. Windows drives are mapped
+# onto a read-only bind mount of the host drive (see docker-compose.yml +
+# SCAN_HOST_MOUNT), so the UI keeps showing the real `C:\...` paths while the
+# process reads them through the mount.
 #
-# This image never deletes anything: it only reads directory metadata.
+# This image never deletes anything: it only reads directory metadata. There are
+# no write endpoints, no shell execution and no writable mounts.
 FROM node:24-alpine
 
 ENV NODE_ENV=production \

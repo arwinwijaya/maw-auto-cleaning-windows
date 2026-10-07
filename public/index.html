@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Cleanup Web Scanner</title>
+  <title>Disk Usage Analyzer — Read-Only WinDirStat</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <style>
     :root {
@@ -22,8 +22,8 @@
       --warn-bg: #fef3c7;
       --danger: #dc2626;
       --danger-bg: #fee2e2;
-      --gray: #64748b;
-      --gray-bg: #f1f5f9;
+      --info: #0284c7;
+      --info-bg: #e0f2fe;
       --radius: 16px;
       --shadow: 0 10px 30px -12px rgba(15, 23, 42, 0.25);
     }
@@ -35,10 +35,10 @@
         --border: #334155;
         --text: #e2e8f0;
         --muted: #94a3b8;
-        --gray-bg: #334155;
         --ok-bg: #052e16;
         --warn-bg: #3b2606;
         --danger-bg: #450a0a;
+        --info-bg: #082f49;
         --shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.6);
       }
     }
@@ -57,7 +57,7 @@
     }
 
     .wrap {
-      max-width: 1040px;
+      max-width: 1400px;
       margin: 0 auto;
       padding: 2rem 1.25rem 4rem;
     }
@@ -68,742 +68,478 @@
       border-radius: var(--radius);
       padding: 1.75rem 1.5rem;
       box-shadow: var(--shadow);
+      margin-bottom: 1.5rem;
       position: relative;
-      overflow: hidden;
-    }
-
-    header.hero::after {
-      content: "";
-      position: absolute;
-      inset: 0;
-      background: radial-gradient(600px 200px at 100% 0%, rgba(255, 255, 255, 0.22), transparent 70%);
-      pointer-events: none;
     }
 
     header.hero h1 {
-      margin: 0 0 0.35rem;
-      font-size: clamp(1.5rem, 3vw, 2rem);
-      letter-spacing: -0.02em;
+      margin: 0 0 0.5rem;
+      font-size: 1.75rem;
+      font-weight: 700;
     }
 
     header.hero p {
       margin: 0;
-      opacity: 0.92;
+      opacity: 0.9;
       font-size: 0.95rem;
     }
 
-    .toolbar {
+    .controls-bar {
       display: flex;
       flex-wrap: wrap;
-      gap: 0.75rem;
+      gap: 1rem;
       align-items: center;
       justify-content: space-between;
-      margin: 1.25rem 0 1rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1rem 1.25rem;
+      box-shadow: var(--shadow);
+      margin-bottom: 1.5rem;
     }
+
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    select, input[type="text"], input[type="number"] {
+      padding: 0.5rem 0.75rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+
+    button {
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
+      border: none;
+      background: var(--brand);
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+      transition: filter 0.15s;
+    }
+
+    button:hover { filter: brightness(1.1); }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    button.secondary { background: var(--muted); }
 
     .tabs {
-      display: inline-flex;
-      gap: 0.25rem;
-      padding: 0.3rem;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      box-shadow: var(--shadow);
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.75rem;
     }
 
-    .tabs button {
-      border: 0;
+    .tab-button {
       background: transparent;
       color: var(--muted);
-      font: inherit;
+      border: 1px solid transparent;
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
       font-weight: 600;
-      padding: 0.55rem 1.1rem;
-      border-radius: 999px;
-      cursor: pointer;
-      transition: background 0.18s ease, color 0.18s ease;
     }
 
-    .tabs button[aria-selected="true"] {
-      color: #fff;
-      background: linear-gradient(135deg, var(--brand), var(--brand-2));
+    .tab-button.active {
+      background: var(--surface);
+      color: var(--brand);
+      border-color: var(--border);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.05);
     }
 
-    #refresh-button {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.55rem;
-      border: 0;
-      border-radius: 999px;
-      padding: 0.7rem 1.4rem;
-      font: inherit;
-      font-weight: 700;
-      color: #fff;
-      cursor: pointer;
-      background: linear-gradient(135deg, var(--brand), var(--brand-2));
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    /* Tree Grid */
+    .tree-container {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
       box-shadow: var(--shadow);
-      transition: transform 0.15s ease, filter 0.15s ease, opacity 0.15s ease;
+      overflow: hidden;
+      margin-bottom: 1.5rem;
     }
 
-    #refresh-button:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.06); }
-    #refresh-button:active:not(:disabled) { transform: translateY(0); }
-    #refresh-button:disabled { cursor: progress; opacity: 0.75; }
-
-    #refresh-button.is-loading::before {
-      content: "";
-      width: 0.95rem;
-      height: 0.95rem;
-      border-radius: 50%;
-      border: 2px solid rgba(255, 255, 255, 0.45);
-      border-top-color: #fff;
-      animation: spin 0.7s linear infinite;
+    .tree-toolbar {
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      align-items: center;
+      background: var(--surface-2);
     }
 
-    @keyframes spin { to { transform: rotate(360deg); } }
+    .tree-table-wrap {
+      overflow-x: auto;
+      max-height: 600px;
+      overflow-y: auto;
+    }
 
-    #scan-status {
-      margin: 0;
-      color: var(--muted);
+    table.tree-table {
+      width: 100%;
+      border-collapse: collapse;
       font-size: 0.9rem;
-      min-height: 1.2rem;
+      text-align: left;
     }
 
-    .panel { animation: fade 0.35s ease; }
-
-    @keyframes fade {
-      from { opacity: 0; transform: translateY(6px); }
-      to { opacity: 1; transform: translateY(0); }
+    table.tree-table th, table.tree-table td {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
     }
 
-    .summary {
+    table.tree-table th {
+      background: var(--surface-2);
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      font-weight: 600;
+      color: var(--muted);
+    }
+
+    table.tree-table tbody tr:hover {
+      background: rgba(37, 99, 235, 0.04);
+      cursor: pointer;
+    }
+
+    .tree-row-name {
       display: flex;
-      flex-wrap: wrap;
-      gap: 1rem 2rem;
-      align-items: center;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 1.25rem 1.5rem;
-      box-shadow: var(--shadow);
-      margin-bottom: 1.25rem;
-    }
-
-    .summary .total-label { color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em; }
-    .summary .total-value { font-size: clamp(1.75rem, 4vw, 2.5rem); font-weight: 800; letter-spacing: -0.03em; }
-    .summary .total-note { color: var(--muted); font-size: 0.85rem; }
-    .summary .spacer { flex: 1 1 auto; }
-
-    .results-controls {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.75rem 1.25rem;
-      align-items: center;
-      margin-bottom: 1rem;
-    }
-
-    .toggle {
-      display: inline-flex;
       align-items: center;
       gap: 0.5rem;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      padding: 0.45rem 0.9rem;
-      font-size: 0.85rem;
-      font-weight: 600;
+    }
+
+    .tree-expander {
+      background: none;
+      border: none;
       color: var(--text);
+      font-weight: bold;
+      padding: 0;
       cursor: pointer;
-      box-shadow: var(--shadow);
-    }
-
-    .toggle input { accent-color: var(--brand); cursor: pointer; }
-
-    .hidden-chip-container {
-      display: inline-flex;
-      align-items: center;
-    }
-
-    .hidden-chip {
-      border: 1px solid var(--warn);
-      background: var(--warn-bg);
-      color: var(--warn);
-      border-radius: 999px;
-      padding: 0.45rem 0.9rem;
-      font: inherit;
-      font-size: 0.85rem;
-      font-weight: 600;
-      cursor: pointer;
-    }
-
-    .group { margin-bottom: 1.5rem; }
-
-    .group h3 {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      font-size: 0.95rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-      margin: 0 0 0.75rem;
-    }
-
-    .group h3 .dot { width: 0.55rem; height: 0.55rem; border-radius: 50%; background: linear-gradient(135deg, var(--brand), var(--brand-2)); }
-
-    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0.9rem; }
-
-    .card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 1rem 1.1rem;
-      box-shadow: var(--shadow);
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-      transition: transform 0.16s ease, border-color 0.16s ease;
-    }
-
-    .card:hover { transform: translateY(-2px); border-color: var(--brand); }
-
-    .card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.6rem; }
-
-    .card-name { font-weight: 700; font-size: 1.02rem; word-break: break-word; }
-
-    .card-path {
-      font-size: 0.78rem;
-      color: var(--muted);
-      word-break: break-all;
-      font-family: "Cascadia Code", Consolas, monospace;
-    }
-
-    .card-meta { display: flex; gap: 1rem; margin-top: auto; padding-top: 0.35rem; }
-    .card-meta .metric { display: flex; flex-direction: column; }
-    .card-meta .metric b { font-size: 1.05rem; }
-    .card-meta .metric span { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
-
-    .badge {
-      flex: 0 0 auto;
-      font-size: 0.72rem;
-      font-weight: 700;
-      padding: 0.25rem 0.6rem;
-      border-radius: 999px;
-      white-space: nowrap;
-    }
-
-    .badge-ready { color: var(--ok); background: var(--ok-bg); }
-    .badge-partial { color: var(--warn); background: var(--warn-bg); }
-    .badge-access_denied { color: var(--danger); background: var(--danger-bg); }
-    .badge-not_found { color: var(--gray); background: var(--gray-bg); }
-
-    .empty {
-      background: var(--surface);
-      border: 1px dashed var(--border);
-      border-radius: var(--radius);
-      padding: 1.5rem;
-      color: var(--muted);
+      width: 1.5rem;
       text-align: center;
     }
 
-    .guide-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 1.5rem;
-      box-shadow: var(--shadow);
-    }
-
-    .guide-card h2 { margin: 0 0 0.5rem; }
-    .guide-card p { margin: 0.4rem 0; line-height: 1.5; color: var(--text); }
-    .guide-card p.section { margin-top: 1.1rem; font-weight: 700; color: var(--brand); }
-    .guide-card p.warn { color: var(--danger); font-weight: 600; }
-    .guide-card p.tip { color: var(--muted); font-style: italic; }
-
-    /* --- Panduan Hapus Aman (rich guide) --- */
-    .guide-wrap { display: flex; flex-direction: column; gap: 1.1rem; }
-
-    .guide-main-title { margin: 0; font-size: 1.6rem; letter-spacing: -0.02em; }
-
-    .guide-section {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 1.25rem 1.35rem;
-      box-shadow: var(--shadow);
-    }
-
-    .guide-section-title { margin: 0; font-size: 1.15rem; letter-spacing: -0.01em; }
-    .guide-section-sub { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.88rem; }
-
-    .pillars { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.75rem; margin-top: 1rem; }
-    .pillar { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 0.85rem 1rem; }
-    .pillar-title { font-weight: 800; color: var(--brand); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.08em; }
-    .pillar-text { margin: 0.4rem 0 0; font-size: 0.88rem; line-height: 1.5; color: var(--text); }
-
-    .flow-list { margin: 1rem 0 0; padding-left: 1.3rem; }
-    .flow-list li { margin: 0.45rem 0; line-height: 1.5; }
-    .flow-list li b { color: var(--brand); }
-
-    .rule-list { margin: 1rem 0 0; padding-left: 1.3rem; }
-    .rule-list li { margin: 0.45rem 0; line-height: 1.5; }
-    .rule-list li b { color: var(--danger); }
-
-    .tip-list { margin: 1rem 0 0; padding-left: 1.3rem; }
-    .tip-list li { margin: 0.4rem 0; line-height: 1.5; color: var(--text); }
-
-    .guide-table-wrap { margin-top: 1rem; overflow-x: auto; }
-    .guide-table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
-    .guide-table th {
-      text-align: left;
-      padding: 0.5rem 0.65rem;
-      color: var(--muted);
-      font-size: 0.72rem;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      border-bottom: 1px solid var(--border);
-      white-space: nowrap;
-    }
-    .guide-table td { padding: 0.6rem 0.65rem; border-bottom: 1px solid var(--border); vertical-align: top; }
-    .guide-row { cursor: pointer; transition: background 0.15s ease; }
-    .guide-row:hover { background: var(--surface-2); }
-    .guide-row:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
-    .cell-name { font-weight: 700; white-space: nowrap; }
-    .cell-impact { color: var(--muted); min-width: 220px; }
-
-    .risk-pill {
-      display: inline-block;
-      font-size: 0.7rem;
-      font-weight: 700;
-      padding: 0.2rem 0.55rem;
+    /* Risk & classification badges */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.2rem 0.5rem;
       border-radius: 999px;
-      white-space: nowrap;
+      font-size: 0.75rem;
+      font-weight: 600;
     }
-    .risk-aman { color: var(--ok); background: var(--ok-bg); }
-    .risk-hati_hati { color: var(--warn); background: var(--warn-bg); }
-    .risk-lanjutan { color: var(--danger); background: var(--danger-bg); }
+    .guide-link {
+      background: none;
+      border: 1px dashed var(--brand);
+      color: var(--brand);
+      padding: 0.15rem 0.45rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-block;
+      text-decoration: none;
+      transition: all 0.15s ease;
+    }
+    .guide-link:hover {
+      background: var(--brand);
+      color: #fff;
+    }
+    .risk-safe-cache { background: var(--ok-bg); color: var(--ok); }
+    .risk-review { background: var(--warn-bg); color: var(--warn); }
+    .risk-protected { background: var(--danger-bg); color: var(--danger); }
+    .risk-unknown { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); }
 
-    .risk-text-aman { color: var(--ok); }
-    .risk-text-hati_hati { color: var(--warn); }
-    .risk-text-lanjutan { color: var(--danger); }
+    /* Treemap */
+    .treemap-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem;
+      box-shadow: var(--shadow);
+      margin-bottom: 1.5rem;
+    }
 
-    .modal-risk-hint { margin: 0.5rem 0 0; font-size: 0.85rem; font-weight: 600; }
+    .treemap-canvas {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      min-height: 350px;
+      max-height: 550px;
+      overflow-y: auto;
+      padding: 0.5rem;
+      background: var(--surface-2);
+      border-radius: 8px;
+    }
 
-    .fact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0.6rem; margin-top: 0.9rem; }
-    .fact { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 0.75rem; display: flex; flex-direction: column; gap: 0.2rem; }
-    .fact-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
-    .fact-value { font-size: 0.85rem; line-height: 1.4; }
+    .treemap-node {
+      border-radius: 6px;
+      padding: 0.5rem;
+      color: #fff;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: filter 0.1s;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.2);
+    }
+    .treemap-node:hover { filter: brightness(1.15); }
 
-    .faq { margin-top: 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
-    .faq-item { border: 1px solid var(--border); border-radius: 12px; padding: 0.15rem 0.85rem; background: var(--surface-2); }
-    .faq-item summary { cursor: pointer; font-weight: 600; padding: 0.6rem 0; font-size: 0.9rem; }
-    .faq-answer { margin: 0 0 0.75rem; color: var(--muted); font-size: 0.86rem; line-height: 1.5; }
+    /* Dashboards & Summaries */
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+      gap: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
 
-    /* Clickable cards + per-folder guide modal */
-    .card { cursor: pointer; }
-    .card:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
-    .card-hint { font-size: 0.74rem; color: var(--brand); font-weight: 600; }
+    .dash-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem;
+      box-shadow: var(--shadow);
+    }
 
+    .dash-card h3 {
+      margin-top: 0;
+      font-size: 1.1rem;
+      margin-bottom: 1rem;
+    }
+
+    /* Modal */
     .modal {
       position: fixed;
       inset: 0;
-      z-index: 50;
+      z-index: 100;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 1.25rem;
+      padding: 1rem;
     }
-
     .modal[hidden] { display: none; }
-
     .modal-backdrop {
       position: absolute;
       inset: 0;
-      background: rgba(15, 23, 42, 0.55);
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(4px);
     }
-
-    .modal-card {
+    .modal-content {
       position: relative;
-      z-index: 1;
-      width: min(680px, 100%);
-      max-height: 86vh;
-      overflow-y: auto;
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
+      width: 100%;
+      max-width: 800px;
+      max-height: 90vh;
+      display: flex;
+      flex-direction: column;
       box-shadow: var(--shadow);
-      padding: 1.25rem 1.35rem 1.5rem;
+      z-index: 101;
+      overflow: hidden;
     }
-
-    .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
-    .modal-head h2 { margin: 0; font-size: 1.15rem; word-break: break-word; }
-
-    #modal-close {
-      border: 0;
-      background: var(--gray-bg);
-      color: var(--text);
-      width: 2rem;
-      height: 2rem;
-      border-radius: 50%;
-      font-size: 1.15rem;
-      line-height: 1;
-      cursor: pointer;
+    .modal-header {
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--surface-2);
     }
-
-    .modal-meta { display: flex; flex-wrap: wrap; gap: 0.5rem 0.75rem; align-items: center; margin: 0.75rem 0 0.5rem; }
-
-    .reason-pill {
-      display: inline-block;
-      color: var(--warn);
-      background: var(--warn-bg);
-      border: 1px solid var(--warn);
-      border-radius: 999px;
-      padding: 0.2rem 0.55rem;
-      font-size: 0.75rem;
-      font-weight: 700;
-      overflow-wrap: anywhere;
+    .modal-body {
+      padding: 1.5rem;
+      overflow-y: auto;
     }
-
-    .modal-path {
-      font-family: "Cascadia Code", Consolas, monospace;
-      font-size: 0.78rem;
-      background: var(--gray-bg);
-      padding: 0.25rem 0.5rem;
-      border-radius: 8px;
-      word-break: break-all;
-    }
-
-    .modal-what { margin: 0.35rem 0 0; color: var(--muted); }
-    .modal-section { margin-top: 1.1rem; }
-    .modal-section h3 { margin: 0 0 0.5rem; font-size: 0.95rem; }
-
-    .step-list, .warn-list { margin: 0; padding-left: 1.2rem; }
-    .step-list li, .warn-list li { margin: 0.25rem 0; line-height: 1.5; }
-    .warn-list { color: var(--danger); }
-
-    .code-wrap { position: relative; }
-
-    .code-block {
-      margin: 0;
-      padding: 0.85rem 0.9rem;
-      padding-right: 4.5rem;
-      background: #0f172a;
+    .code-wrap {
+      position: relative;
+      background: var(--bg);
       color: #e2e8f0;
-      border-radius: 12px;
-      font-family: "Cascadia Code", Consolas, monospace;
-      font-size: 0.78rem;
+      border-radius: 8px;
+      padding: 1rem;
+      margin: 0.75rem 0;
+      font-family: monospace;
+      font-size: 0.85rem;
       overflow-x: auto;
-      white-space: pre-wrap;
-      word-break: break-all;
     }
-
-    .copy-button {
+    .copy-btn {
       position: absolute;
       top: 0.5rem;
       right: 0.5rem;
-      border: 0;
-      border-radius: 8px;
-      padding: 0.35rem 0.7rem;
-      font: inherit;
-      font-size: 0.75rem;
-      font-weight: 700;
+      background: rgba(255,255,255,0.1);
       color: #fff;
-      background: linear-gradient(135deg, var(--brand), var(--brand-2));
-      cursor: pointer;
-    }
-
-    .modal-note { margin: 0.45rem 0 0; color: var(--muted); font-size: 0.82rem; }
-
-    .modal-disclaimer {
-      margin-top: 1.25rem;
-      padding-top: 0.85rem;
-      border-top: 1px solid var(--border);
-      color: var(--muted);
-      font-size: 0.8rem;
-    }
-
-    /* --- Bersihkan Cache --- */
-    .cleanup-intro {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 1.35rem 1.5rem;
-      box-shadow: var(--shadow);
-      margin-bottom: 1.25rem;
-    }
-
-    .cleanup-intro h2 { margin: 0 0 0.5rem; font-size: 1.35rem; letter-spacing: -0.02em; }
-    .cleanup-intro p { margin: 0; color: var(--muted); line-height: 1.55; }
-
-    .cleanup-safety-list { margin: 0.9rem 0 0; padding-left: 1.25rem; color: var(--text); }
-    .cleanup-safety-list li { margin: 0.3rem 0; line-height: 1.5; font-size: 0.9rem; }
-
-    .cleanup-targets {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-      gap: 0.9rem;
-      margin-bottom: 1.25rem;
-    }
-
-    .cleanup-loading { color: var(--muted); }
-
-    .target-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 1rem 1.1rem;
-      box-shadow: var(--shadow);
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-      transition: border-color 0.16s ease, transform 0.16s ease;
-    }
-
-    .target-card.is-selected { border-color: var(--brand); box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.18), var(--shadow); }
-    .target-card.is-disabled { opacity: 0.6; }
-
-    .target-head { display: flex; align-items: flex-start; gap: 0.65rem; }
-    .target-head input { margin-top: 0.2rem; accent-color: var(--brand); cursor: pointer; flex: 0 0 auto; }
-    .target-head .target-titles { display: flex; flex-direction: column; gap: 0.2rem; flex: 1 1 auto; }
-    .target-name { font-weight: 700; font-size: 1rem; }
-    .target-desc { font-size: 0.82rem; color: var(--muted); line-height: 1.45; }
-
-    .target-path {
-      font-family: "Cascadia Code", Consolas, monospace;
-      font-size: 0.74rem;
-      color: var(--muted);
-      background: var(--gray-bg);
+      border: none;
       padding: 0.25rem 0.5rem;
-      border-radius: 8px;
-      word-break: break-all;
-    }
-
-    .target-tags { display: flex; flex-wrap: wrap; gap: 0.4rem; }
-
-    .tag {
-      font-size: 0.68rem;
-      font-weight: 700;
-      padding: 0.2rem 0.55rem;
-      border-radius: 999px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-
-    .tag-cat { color: var(--brand); background: rgba(37, 99, 235, 0.12); }
-    .tag-safe { color: var(--ok); background: var(--ok-bg); }
-    .tag-caution { color: var(--warn); background: var(--warn-bg); }
-    .tag-protected { color: var(--danger); background: var(--danger-bg); }
-
-    .cleanup-actions { display: flex; gap: 0.75rem; margin-bottom: 1.25rem; }
-
-    #cleanup-preview-button,
-    #cleanup-start-button {
-      border: 0;
-      border-radius: 999px;
-      padding: 0.7rem 1.5rem;
-      font: inherit;
-      font-weight: 700;
-      color: #fff;
+      border-radius: 4px;
       cursor: pointer;
-      background: linear-gradient(135deg, var(--brand), var(--brand-2));
-      box-shadow: var(--shadow);
-      transition: transform 0.15s ease, filter 0.15s ease, opacity 0.15s ease;
     }
+    .copy-btn:hover { background: rgba(255,255,255,0.2); }
 
-    #cleanup-start-button { background: linear-gradient(135deg, #dc2626, #b91c1c); }
-
-    #cleanup-preview-button:hover:not(:disabled),
-    #cleanup-start-button:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.06); }
-    #cleanup-preview-button:disabled,
-    #cleanup-start-button:disabled { cursor: not-allowed; opacity: 0.55; }
-
-    .cleanup-preview {
-      background: var(--surface);
+    .progress-banner {
+      background: var(--info-bg);
+      color: var(--info);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      padding: 1.25rem 1.5rem;
-      box-shadow: var(--shadow);
-      margin-bottom: 1.25rem;
-    }
-
-    .cleanup-preview h3 { margin: 0 0 0.75rem; font-size: 1.05rem; }
-
-    .preview-stats { display: flex; flex-wrap: wrap; gap: 1rem 2rem; margin-bottom: 1rem; }
-    .preview-stat { display: flex; flex-direction: column; }
-    .preview-stat b { font-size: 1.4rem; letter-spacing: -0.02em; }
-    .preview-stat span { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
-
-    .preview-table-wrap { overflow-x: auto; }
-    .preview-table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
-    .preview-table th {
-      text-align: left;
-      padding: 0.5rem 0.65rem;
-      color: var(--muted);
-      font-size: 0.7rem;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      border-bottom: 1px solid var(--border);
-      white-space: nowrap;
-    }
-    .preview-table td { padding: 0.55rem 0.65rem; border-bottom: 1px solid var(--border); }
-    .preview-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
-
-    .cleanup-confirm {
-      background: var(--surface);
-      border: 1px solid var(--danger);
-      border-radius: var(--radius);
-      padding: 1.15rem 1.35rem;
-      box-shadow: var(--shadow);
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
       display: flex;
-      flex-direction: column;
-      gap: 0.9rem;
-      margin-bottom: 1.25rem;
+      align-items: center;
+      justify-content: space-between;
     }
-
-    .cleanup-confirm-label { display: flex; align-items: flex-start; gap: 0.6rem; font-size: 0.9rem; line-height: 1.5; cursor: pointer; }
-    .cleanup-confirm-label input { margin-top: 0.2rem; accent-color: var(--danger); cursor: pointer; flex: 0 0 auto; }
-
-    .cleanup-progress {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 1.15rem 1.35rem;
-      box-shadow: var(--shadow);
-      margin-bottom: 1.25rem;
-    }
-
-    .progress-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 0.75rem; }
-    .progress-head span { font-weight: 700; }
-
-    #cleanup-cancel-button {
-      border: 1px solid var(--danger);
-      background: var(--danger-bg);
-      color: var(--danger);
-      border-radius: 999px;
-      padding: 0.45rem 1rem;
-      font: inherit;
-      font-weight: 700;
-      cursor: pointer;
-    }
-
-    .progress-track { height: 0.6rem; background: var(--gray-bg); border-radius: 999px; overflow: hidden; }
-    .progress-bar { height: 100%; width: 0; border-radius: 999px; background: linear-gradient(135deg, var(--brand), var(--brand-2)); transition: width 0.3s ease; }
-    .progress-detail { margin: 0.65rem 0 0; color: var(--muted); font-size: 0.85rem; }
-
-    .cleanup-result {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 1.25rem 1.5rem;
-      box-shadow: var(--shadow);
-    }
-
-    .cleanup-result h3 { margin: 0 0 0.75rem; font-size: 1.05rem; }
-    .result-line { display: flex; justify-content: space-between; gap: 1rem; padding: 0.4rem 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
-    .result-line:last-child { border-bottom: 0; }
-    .result-line span:last-child { font-weight: 700; font-variant-numeric: tabular-nums; }
-    .result-note { margin: 0.85rem 0 0; color: var(--muted); font-size: 0.85rem; }
-    .result-ok { color: var(--ok); }
-    .result-warn { color: var(--warn); }
-    .result-error { color: var(--danger); }
+    .progress-banner[hidden] { display: none; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <header class="hero">
-      <h1>Cleanup Web Scanner</h1>
-      <p>Pemindai cache &amp; pembersih aman &mdash; hanya folder terdaftar, selalu didahului pratinjau dan konfirmasi.</p>
+      <h1>Disk Usage Analyzer (Read-Only)</h1>
+      <p>Analisis penyimpanan disk ala WinDirStat — aman, 100% read-only, tanpa endpoint penghapusan.</p>
     </header>
 
-    <div class="toolbar">
-      <div class="tabs" role="tablist" aria-label="Navigasi">
-        <button id="tab-results" role="tab" aria-selected="true">Hasil Pindai</button>
-        <button id="tab-cleanup" role="tab" aria-selected="false">Bersihkan Cache</button>
-        <button id="tab-guide" role="tab" aria-selected="false">Panduan Hapus Aman</button>
+    <div class="controls-bar">
+      <div class="control-group">
+        <label for="root-select"><b>Drive / Root:</b></label>
+        <select id="root-select"></select>
+        <button id="scan-btn" type="button">Pindai</button>
+        <button id="cancel-btn" type="button" class="secondary" hidden>Batalkan</button>
       </div>
-      <button id="refresh-button" type="button">Pindai Ulang</button>
+      <div class="control-group">
+        <input type="text" id="filter-path" placeholder="Cari path / nama folder..." style="width: 240px;" />
+        <label>Min Size: <select id="filter-min-size">
+          <option value="0">Semua</option>
+          <option value="1048576">≥ 1 MB</option>
+          <option value="104857600">≥ 100 MB</option>
+          <option value="1073741824">≥ 1 GB</option>
+        </select></label>
+      </div>
     </div>
 
-    <p id="scan-status" role="status" aria-live="polite"></p>
-    <p id="scan-delta" aria-live="polite"></p>
-    <p id="cleaned-status" aria-live="polite"></p>
+    <div id="progress-banner" class="progress-banner" hidden>
+      <div id="progress-text">Memindai...</div>
+      <button id="progress-cancel" type="button" class="secondary">Batalkan</button>
+    </div>
 
-    <section id="results-panel" class="panel" aria-label="Hasil Pindai">
-      <div class="results-controls">
-        <label class="toggle" for="sort-toggle">
-          <input id="sort-toggle" type="checkbox" checked />
-          <span>Urutkan dari terbesar</span>
-        </label>
-        <label class="toggle" for="hide-zero-toggle">
-          <input id="hide-zero-toggle" type="checkbox" />
-          <span>Sembunyikan folder kosong</span>
-        </label>
-        <span id="hidden-chip" class="hidden-chip-container" aria-live="polite"></span>
-      </div>
-      <div id="results-content" aria-live="polite"></div>
-      <p id="grand-total"></p>
-      <button id="mark-cleaned-button" type="button" hidden>✓ Sudah dibersihkan</button>
-      <p id="empty-state"></p>
-    </section>
+    <div class="tabs">
+      <button type="button" class="tab-button active" data-tab="tree">Hierarki Folder (Tree)</button>
+      <button type="button" class="tab-button" data-tab="treemap">Treemap Visualisasi</button>
+      <button type="button" class="tab-button" data-tab="dashboards">Dashboard & Ekstensi</button>
+      <button type="button" class="tab-button" data-tab="guides">Panduan & Cleanup Registry</button>
+    </div>
 
-    <section id="guide-panel" class="panel" aria-label="Panduan Hapus Aman" hidden>
-      <div class="guide-card">
-        <h2>Panduan Hapus Aman</h2>
-        <p>Penghapusan dilakukan manual lewat File Explorer. Aplikasi ini hanya menampilkan ringkasan dan tidak menyediakan tombol pintas apa pun.</p>
-      </div>
-    </section>
-
-    <section id="cleanup-panel" class="panel" aria-label="Bersihkan Cache" hidden>
-      <div class="cleanup-intro">
-        <h2>Bersihkan Cache &amp; File Sementara</h2>
-        <p>Hanya folder yang terdaftar di bawah ini yang boleh dibersihkan. Anda tidak dapat memasukkan path sendiri. File yang lebih baru dari 24 jam selalu dilewati, begitu pula cookie, riwayat, dan sandi browser.</p>
-        <ul class="cleanup-safety-list">
-          <li>Pratinjau dulu &mdash; lihat berapa file dan byte yang akan dihapus sebelum memutuskan.</li>
-          <li>Anda harus mencentang konfirmasi sebelum penghapusan dapat dimulai.</li>
-          <li>Folder akar tidak pernah dihapus, hanya isinya. File yang sedang dipakai akan dilewati.</li>
-        </ul>
-      </div>
-
-      <div id="cleanup-targets" class="cleanup-targets" aria-live="polite">
-        <p class="cleanup-loading">Memuat daftar target&hellip;</p>
-      </div>
-
-      <div class="cleanup-actions">
-        <button id="cleanup-preview-button" type="button" disabled>Pratinjau</button>
-      </div>
-
-      <div id="cleanup-preview" class="cleanup-preview" hidden></div>
-
-      <div id="cleanup-confirm-wrap" class="cleanup-confirm" hidden>
-        <label class="cleanup-confirm-label" for="cleanup-confirm-check">
-          <input id="cleanup-confirm-check" type="checkbox" />
-          <span>Saya sudah meninjau pratinjau dan memahami file akan dihapus permanen.</span>
-        </label>
-        <button id="cleanup-start-button" type="button" disabled>Bersihkan Sekarang</button>
-      </div>
-
-      <div id="cleanup-progress" class="cleanup-progress" hidden aria-live="polite">
-        <div class="progress-head">
-          <span id="cleanup-progress-label">Menghapus&hellip;</span>
-          <button id="cleanup-cancel-button" type="button">Batalkan</button>
+    <!-- TAB: TREE -->
+    <div id="panel-tree" class="panel active">
+      <div class="tree-container">
+        <div class="tree-toolbar">
+          <span id="tree-path-crumb">Root</span>
+          <div style="margin-left: auto; display: flex; gap: 0.5rem; align-items: center;">
+            <button type="button" id="tree-up-btn" class="secondary" disabled>Naik ke Parent</button>
+            <label>Urutkan: <select id="tree-sort-select">
+              <option value="size-desc">Ukuran (Terbesar)</option>
+              <option value="size-asc">Ukuran (Terkecil)</option>
+              <option value="files-desc">Jumlah File (Terbanyak)</option>
+              <option value="folders-desc">Subfolder (Terbanyak)</option>
+              <option value="percent-desc">% Drive (Terbesar)</option>
+              <option value="name-asc">Nama (A-Z)</option>
+              <option value="date-desc">Modifikasi (Terbaru)</option>
+            </select></label>
+          </div>
         </div>
-        <div class="progress-track"><div id="cleanup-progress-bar" class="progress-bar"></div></div>
-        <p id="cleanup-progress-detail" class="progress-detail"></p>
+        <div class="tree-table-wrap">
+          <table class="tree-table">
+            <thead>
+              <tr>
+                <th>Nama</th>
+                <th>Ukuran</th>
+                <th>% Parent</th>
+                <th>% Drive</th>
+                <th>Items</th>
+                <th>Files</th>
+                <th>Subfolder</th>
+                <th>Modifikasi Terakhir</th>
+                <th>Klasifikasi (Risk)</th>
+                <th>Panduan Cleanup</th>
+              </tr>
+            </thead>
+            <tbody id="tree-tbody">
+              <tr><td colspan="9" style="text-align: center; color: var(--muted); padding: 3rem;">Pilih drive di atas dan klik "Pindai" untuk memulai.</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
+    </div>
 
-      <div id="cleanup-result" class="cleanup-result" hidden aria-live="polite"></div>
-    </section>
-  </div>
-
-  <div id="folder-modal" class="modal" hidden>
-    <div id="modal-backdrop" class="modal-backdrop"></div>
-    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-      <div class="modal-head">
-        <h2 id="modal-title"></h2>
-        <button id="modal-close" type="button" aria-label="Tutup">&times;</button>
+    <!-- TAB: TREEMAP -->
+    <div id="panel-treemap" class="panel">
+      <div class="treemap-wrap">
+        <h3>WinDirStat Treemap (File & Folder Terbesar)</h3>
+        <p style="color: var(--muted); font-size: 0.9rem; margin-top: 0;">Blok warna mewakili ukuran relatif file/folder. Klik blok untuk melihat detail.</p>
+        <div id="treemap-canvas" class="treemap-canvas">
+          <div style="color: var(--muted); padding: 2rem; margin: auto;">Belum ada data pemindaian.</div>
+        </div>
       </div>
-      <div id="modal-body"></div>
+    </div>
+
+    <!-- TAB: DASHBOARDS -->
+    <div id="panel-dashboards" class="panel">
+      <div class="dashboard-grid">
+        <div class="dash-card">
+          <h3>Top 12 Folder Terbesar</h3>
+          <div class="tree-table-wrap" style="max-height: 350px;">
+            <table class="tree-table">
+              <thead><tr><th>Nama Path</th><th>Ukuran</th><th>% Drive</th><th>Risk</th></tr></thead>
+              <tbody id="top-folders-tbody"><tr><td colspan="4" style="text-align: center; color: var(--muted);">Belum ada data.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="dash-card">
+          <h3>Top 12 File Terbesar</h3>
+          <div class="tree-table-wrap" style="max-height: 350px;">
+            <table class="tree-table">
+              <thead><tr><th>Nama File</th><th>Ukuran</th><th>% Drive</th><th>Modifikasi</th></tr></thead>
+              <tbody id="top-files-tbody"><tr><td colspan="4" style="text-align: center; color: var(--muted);">Belum ada data.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="dash-card">
+        <h3>Ringkasan Ekstensi File</h3>
+        <div class="tree-table-wrap" style="max-height: 350px;">
+          <table class="tree-table">
+            <thead><tr><th>Ekstensi</th><th>Total Ukuran</th><th>% Drive</th><th>Jumlah File</th></tr></thead>
+            <tbody id="extension-tbody"><tr><td colspan="4" style="text-align: center; color: var(--muted);">Belum ada data.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB: GUIDES -->
+    <div id="panel-guides" class="panel">
+      <div class="dash-card">
+        <h3>Cleanup Guide Registry & Command (Read-Only Copy)</h3>
+        <p style="color: var(--muted);">Aplikasi ini 100% read-only dan tidak pernah mengeksekusi perintah shell. Salin command PowerShell/CMD ke terminal Anda.</p>
+        <div id="guides-container">Memuat panduan...</div>
+      </div>
     </div>
   </div>
 
-  <script src="./app.js"></script>
+  <!-- MODAL DETAIL & GUIDE -->
+  <div id="folder-modal" class="modal" hidden>
+    <div class="modal-backdrop" id="modal-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="modal-title" style="margin: 0; font-size: 1.25rem;">Detail Folder</h2>
+        <button type="button" id="modal-close" class="secondary" style="padding: 0.25rem 0.75rem;">Tutup</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
 </body>
 </html>

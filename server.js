@@ -1,53 +1,30 @@
 'use strict';
 
 const http = require('node:http');
+const crypto = require('node:crypto');
 const fs = require('node:fs').promises;
 const path = require('node:path');
+
+const {
+  analyze,
+  createRoots,
+  percentOf,
+  toSummary,
+  toDisplayPath,
+  DEFAULT_SCAN_TIMEOUT_MS,
+} = require('./lib/analyzer.js');
+const { NodeRegistry, nodeId } = require('./lib/tree-registry.js');
+const { getGuide, GUIDES } = require('./lib/cleanup-guides.js');
 const { sizeHuman } = require('./lib/format.js');
-const { resolveUserPaths } = require('./lib/resolve-temp.js');
-const { mapLimit } = require('./lib/concurrency.js');
-const cleanupTargets = require('./lib/cleanup-targets.js');
-const cleanupEngine = require('./lib/cleanup-engine.js');
-const cleanupJobs = require('./lib/cleanup-jobs.js');
 
 const HOST = '127.0.0.1';
 const DEFAULT_PORT = 3456;
-const DEFAULT_SCAN_TIMEOUT_MS = 45_000;
-
-function resolveTimeoutMs(options = {}) {
-  if (options.timeoutMs) return Number(options.timeoutMs);
-  const fromEnv = Number(process.env.SCAN_TIMEOUT_MS);
-  return fromEnv > 0 ? fromEnv : DEFAULT_SCAN_TIMEOUT_MS;
-}
 const PUBLIC_ROOT = path.resolve(__dirname, 'public');
 
-function nowIsoWithLocalOffset(date = new Date()) {
-  const pad = (n, w = 2) => String(Math.trunc(Math.abs(n))).padStart(w, '0');
-  const year = date.getFullYear();
-  const month = pad(date.getMonth() + 1);
-  const day = pad(date.getDate());
-  const hour = pad(date.getHours());
-  const minute = pad(date.getMinutes());
-  const second = pad(date.getSeconds());
-  const ms = pad(date.getMilliseconds(), 3);
-  const offsetMinutes = -date.getTimezoneOffset();
-  const sign = offsetMinutes >= 0 ? '+' : '-';
-  const offsetHour = pad(Math.floor(Math.abs(offsetMinutes) / 60));
-  const offsetMinute = pad(Math.abs(offsetMinutes) % 60);
-  return `${year}-${month}-${day}T${hour}:${minute}:${second}.${ms}${sign}${offsetHour}:${offsetMinute}`;
-}
+// How long a completed scan session is retained for lazy tree lookups.
+const SESSION_TTL_MS = 30 * 60_000;
+const MAX_SESSIONS = 8;
 
-
-/**
- * Security headers applied to every HTTP response (spec R13/R14).
- *
- * The CSP policy is intentionally strict: scripts and connections are limited
- * to same-origin, framing is denied, and forms/base URLs are locked down. The
- * `style-src` directive keeps `'unsafe-inline'` so the single `<style>` block
- * in `public/index.html` keeps working without a build step (spec R14).
- *
- * @returns {Record<string, string>}
- */
 function securityHeaders() {
   return {
     'content-security-policy': [
@@ -77,527 +54,238 @@ function json(res, statusCode, body) {
   res.end(payload);
 }
 
-function isAccessDenied(code) {
-  return code === 'EACCES' || code === 'EPERM';
-}
-
 function isNotFound(code) {
   return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
-const KNOWN_GROUPS = new Set(['temp', 'system', 'logs', 'cache', 'app']);
-
-function normalizeGroup(group) {
-  return KNOWN_GROUPS.has(group) ? group : 'other';
-}
-
-const WINDOWS_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
-
-function isWindowsPath(value) {
-  return typeof value === 'string' && WINDOWS_PATH_PATTERN.test(value);
-}
+// ---------------------------------------------------------------------------
+// Scan sessions
+// ---------------------------------------------------------------------------
 
 /**
- * Parse SCAN_HOST_MOUNT into a drive-letter → mount-point map.
- * - `undefined`/empty → `null` (no remapping)
- * - Object `{ c: '/mnt/c', d: '/mnt/d' }` → normalized lowercase keys
- * - JSON string `'{"c":"/mnt/c","d":"/mnt/d"}'` → parsed then normalized
- * - Legacy string `'/mnt/c'` → infer drive from last segment (`c`); if not a single letter → catch-all `*`
- * @param {string|object} [mount]
- * @returns {object|null} Map like `{ c: '/mnt/c' }` or `{ '*': '/mnt/host' }`
+ * One in-flight or completed scan. Holds the fully walked tree in memory so the
+ * UI can lazily request individual subtrees, plus a registry that maps opaque
+ * node ids back to real filesystem nodes.
  */
-function parseHostMount(mount) {
-  if (!mount) return null;
-  if (typeof mount === 'object' && !Array.isArray(mount)) {
-    const map = {};
-    for (const [key, value] of Object.entries(mount)) {
-      if (typeof value !== 'string') continue;
-      const k = String(key).toLowerCase().replace(/^([a-z]):?$/, '$1');
-      if (/^[a-z]$/.test(k)) map[k] = value;
-    }
-    return Object.keys(map).length > 0 ? map : null;
-  }
-  const raw = String(mount).trim();
-  if (!raw) return null;
-  if (raw.startsWith('{')) {
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return parseHostMount(parsed);
-      }
-    } catch {
-      // fall through to legacy string handling
-    }
-  }
-  // Legacy single mount string: infer drive from last path segment
-  const normalized = raw.replace(/\\/g, '/').replace(/\/+$/, '');
-  const last = normalized.split('/').pop() || '';
-  if (/^[A-Za-z]$/.test(last)) {
-    return { [last.toLowerCase()]: raw };
-  }
-  // No recognizable drive letter: treat as catch-all for backward compatibility
-  return { '*': raw };
-}
-
-/**
- * Translate a Windows path (e.g. `C:\\Windows\\Temp`) into the equivalent path
- * inside a Linux container bind mount (e.g. `/mnt/c/Windows/Temp`).
- *
- * @param {string} winPath - Windows-style path.
- * @param {string|object} [mount] - Container mount point or drive map.
- * @returns {string} Container path, or original winPath if no matching mount.
- */
-function toContainerPath(winPath, mount) {
-  const map = parseHostMount(mount);
-  if (!map) return String(winPath);
-  const driveMatch = String(winPath).match(/^([A-Za-z]):/);
-  const drive = driveMatch ? driveMatch[1].toLowerCase() : null;
-  const mountPoint = drive && map[drive] ? map[drive] : map['*'] || null;
-  if (!mountPoint) return String(winPath);
-  const unified = String(winPath).replace(/\//g, '\\');
-  const withoutDrive = unified.replace(/^[A-Za-z]:\\?/, '');
-  const posix = withoutDrive.replace(/\\/g, '/').replace(/^\/+/, '');
-  const base = String(mountPoint).replace(/\\/g, '/').replace(/\/+$/, '');
-  return posix ? `${base}/${posix}` : base;
-}
-
-function toDisplayPath(targetPath) {
-  return String(targetPath).replace(/\//g, '\\');
-}
-
-/**
- * When the scanner runs inside a Linux container, the Windows whitelist paths
- * must be remapped to their bind-mount location. The UI keeps showing the
- * original Windows path via `displayPath`, while `path` points at the mounted
- * folder that the container can actually read.
- *
- * @param {Array<object>} folders - Whitelist entries with Windows paths.
- * @param {string|object} [mount] - Container mount point or drive map.
- * @returns {Array<object>}
- */
-function applyHostMount(folders, mount) {
-  if (!mount) return folders.map((folder) => ({ ...folder }));
-  return folders.map((folder) => {
-    if (!isWindowsPath(folder.path)) return { ...folder };
-    const mapped = toContainerPath(folder.path, mount);
-    if (mapped === folder.path) return { ...folder };
-    return {
-      ...folder,
-      displayPath: folder.displayPath || toDisplayPath(folder.path),
-      path: mapped,
-    };
-  });
-}
-
-/**
- * Parse the optional `SCAN_ROOTS` JSON override. Each entry is
- * `{ name, path, group?, displayPath? }` where `path` is the path readable by
- * the process (host or container).
- *
- * @param {string} [raw] - Raw JSON string.
- * @returns {Array<object>|null} Parsed roots, or null when absent/invalid.
- */
-function parseScanRoots(raw) {
-  if (!raw) return null;
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    console.warn(`SCAN_ROOTS bukan JSON valid: ${error.message}`);
-    return null;
-  }
-  if (!Array.isArray(parsed) || parsed.length === 0) {
-    console.warn('SCAN_ROOTS harus berupa array JSON yang tidak kosong.');
-    return null;
-  }
-  const roots = [];
-  for (const item of parsed) {
-    if (!item || typeof item !== 'object') continue;
-    if (typeof item.name !== 'string' || typeof item.path !== 'string') continue;
-    const entry = { name: item.name, path: item.path };
-    if (typeof item.group === 'string') entry.group = item.group;
-    if (typeof item.displayPath === 'string') entry.displayPath = item.displayPath;
-    roots.push(entry);
-  }
-  if (roots.length === 0) {
-    console.warn('SCAN_ROOTS tidak berisi entri valid {name, path}.');
-    return null;
-  }
-  return roots;
-}
-
-function makeEntry(folder, status, fileCount = 0, sizeBytes = 0, reason) {
-  const entry = {
-    name: folder.name,
-    path: folder.displayPath || folder.path,
-    group: normalizeGroup(folder.group),
-    fileCount,
-    sizeBytes,
-    sizeHuman: sizeHuman(sizeBytes),
-    status,
-  };
-  if ((status === 'partial' || status === 'access_denied') && reason) {
-    entry.reason = reason;
-  }
-  if (folder.fallback === true) entry.fallback = true;
-  return entry;
-}
-
-async function getWhitelist(options = {}) {
-  if (Array.isArray(options.whitelistRoots)) {
-    return options.whitelistRoots.map((folder) => ({ ...folder }));
+class ScanSession {
+  constructor(id, root) {
+    this.id = id;
+    this.root = root;
+    this.status = 'scanning';
+    this.registry = new NodeRegistry();
+    this.liveRoot = null;
+    this.result = null;
+    this.error = null;
+    this.abortController = new AbortController();
+    this.createdAt = Date.now();
+    this.updatedAt = Date.now();
+    this.listeners = new Set();
+    this.totals = { sizeBytes: 0, fileCount: 0, subfolderCount: 0 };
+    this.progress = { dirsScanned: 0, filesScanned: 0, bytesScanned: 0, currentPath: '' };
   }
 
-  const mount = options.scanHostMount !== undefined
-    ? options.scanHostMount
-    : process.env.SCAN_HOST_MOUNT;
-  const scanRoots = parseScanRoots(
-    options.scanRoots !== undefined ? options.scanRoots : process.env.SCAN_ROOTS,
-  );
-  if (scanRoots) {
-    return applyHostMount(scanRoots, mount);
+  subscribe(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
-  if (process.env.TEST_FIXTURE_ROOT) {
-    const root = process.env.TEST_FIXTURE_ROOT;
-    return [
-      { name: 'Local\\Temp', path: path.join(root, 'UserTemp'), group: 'temp' },
-      { name: 'Windows\\Temp', path: path.join(root, 'WindowsTemp'), group: 'temp' },
-      { name: 'Windows\\Prefetch', path: path.join(root, 'Prefetch'), group: 'system' },
-      { name: '$Recycle.Bin', path: path.join(root, '$Recycle.Bin'), group: 'system' },
-      {
-        name: 'SoftwareDistribution\\Download',
-        path: path.join(root, 'SoftwareDistribution', 'Download'),
-        group: 'system',
-      },
-      { name: 'Windows\\Logs', path: path.join(root, 'WindowsLogs'), group: 'logs' },
-      { name: 'Windows\\Minidump', path: path.join(root, 'Minidump'), group: 'logs' },
-      { name: 'LiveKernelReports', path: path.join(root, 'LiveKernelReports'), group: 'logs' },
-      {
-        name: 'WER\\ReportQueue',
-        path: path.join(root, 'WER', 'ReportQueue'),
-        group: 'logs',
-      },
-      {
-        name: 'WER\\ReportArchive',
-        path: path.join(root, 'WER', 'ReportArchive'),
-        group: 'logs',
-      },
-      { name: 'CrashDumps', path: path.join(root, 'UserLocal', 'CrashDumps'), group: 'cache' },
-      {
-        name: 'INetCache',
-        path: path.join(root, 'UserLocal', 'Microsoft', 'Windows', 'INetCache'),
-        group: 'cache',
-      },
-      { name: 'D3DSCache', path: path.join(root, 'UserLocal', 'D3DSCache'), group: 'cache' },
-      {
-        name: 'NVIDIA\\DXCache',
-        path: path.join(root, 'UserLocal', 'NVIDIA', 'DXCache'),
-        group: 'cache',
-      },
-      {
-        name: 'NVIDIA\\GLCache',
-        path: path.join(root, 'UserLocal', 'NVIDIA', 'GLCache'),
-        group: 'cache',
-      },
-      { name: 'D:\\Temp', path: 'D:\\Temp', group: 'temp' },
-      { name: 'D:\\Program', path: 'D:\\Program', group: 'app' },
-      { name: 'D:\\Program Files', path: 'D:\\Program Files', group: 'app' },
-    ];
-  }
-
-  const { localAppData, temp, usedFallback } = await (
-    options.resolveUserPaths || resolveUserPaths
-  )();
-  const userLocal = localAppData || 'C:\\Users\\Default\\AppData\\Local';
-
-  const folders = [
-    { name: 'Local\\Temp', path: temp, group: 'temp', fallback: usedFallback },
-    { name: 'Windows\\Temp', path: 'C:\\Windows\\Temp', group: 'temp' },
-    { name: 'Windows\\Prefetch', path: 'C:\\Windows\\Prefetch', group: 'system' },
-    { name: '$Recycle.Bin', path: 'C:\\$Recycle.Bin', group: 'system' },
-    {
-      name: 'SoftwareDistribution\\Download',
-      path: 'C:\\Windows\\SoftwareDistribution\\Download',
-      group: 'system',
-    },
-    { name: 'Windows\\Logs', path: 'C:\\Windows\\Logs', group: 'logs' },
-    { name: 'Windows\\Minidump', path: 'C:\\Windows\\Minidump', group: 'logs' },
-    { name: 'LiveKernelReports', path: 'C:\\Windows\\LiveKernelReports', group: 'logs' },
-    {
-      name: 'WER\\ReportQueue',
-      path: 'C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportQueue',
-      group: 'logs',
-    },
-    {
-      name: 'WER\\ReportArchive',
-      path: 'C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportArchive',
-      group: 'logs',
-    },
-    { name: 'CrashDumps', path: path.join(userLocal, 'CrashDumps'), group: 'cache' },
-    {
-      name: 'INetCache',
-      path: path.join(userLocal, 'Microsoft', 'Windows', 'INetCache'),
-      group: 'cache',
-    },
-    { name: 'D3DSCache', path: path.join(userLocal, 'D3DSCache'), group: 'cache' },
-    { name: 'NVIDIA\\DXCache', path: path.join(userLocal, 'NVIDIA', 'DXCache'), group: 'cache' },
-    { name: 'NVIDIA\\GLCache', path: path.join(userLocal, 'NVIDIA', 'GLCache'), group: 'cache' },
-    { name: 'D:\\Temp', path: 'D:\\Temp', group: 'temp' },
-    { name: 'D:\\Program', path: 'D:\\Program', group: 'app' },
-    { name: 'D:\\Program Files', path: 'D:\\Program Files', group: 'app' },
-  ];
-
-  return applyHostMount(folders, mount);
-}
-
-function hasTimedOut(context) {
-  return context.now() - context.startedAt >= context.timeoutMs || context.timedOut === true;
-}
-
-function isAborted(context) {
-  return Boolean(context.abortSignal && context.abortSignal.aborted);
-}
-
-// Race `work()` against the strict global deadline. Resolves with
-// { timedOut: true } when the deadline fires first, otherwise
-// { timedOut: false, value } or { timedOut: false, error }.
-// On timer expiry, also marks `context.timedOut = true` so downstream
-// callers (and injected clocks) observe the same deadline.
-async function raceDeadline(context, work) {
-  if (hasTimedOut(context)) {
-    context.timedOut = true;
-    return { timedOut: true };
-  }
-  if (isAborted(context)) {
-    return { timedOut: true };
-  }
-  const remaining = context.timeoutMs - (context.now() - context.startedAt);
-  if (remaining <= 0) {
-    context.timedOut = true;
-    return { timedOut: true };
-  }
-
-  let timer;
-  const deadline = new Promise((resolve) => {
-    timer = setTimeout(() => {
-      context.timedOut = true;
-      resolve({ timedOut: true });
-    }, remaining);
-  });
-
-  let onAbort;
-  const aborted = new Promise((resolve) => {
-    if (!context.abortSignal) return;
-    if (context.abortSignal.aborted) {
-      resolve({ timedOut: true });
-      return;
-    }
-    onAbort = () => resolve({ timedOut: true });
-    context.abortSignal.addEventListener('abort', onAbort, { once: true });
-  });
-
-  const settled = Promise.resolve()
-    .then(work)
-    .then(
-      (value) => hasTimedOut(context) ? { timedOut: true } : { timedOut: false, value },
-      (error) => hasTimedOut(context) ? { timedOut: true } : { timedOut: false, error },
-    );
-
-  try {
-    return await Promise.race([settled, deadline, aborted]);
-  } finally {
-    clearTimeout(timer);
-    if (onAbort && context.abortSignal) context.abortSignal.removeEventListener('abort', onAbort);
-  }
-}
-
-async function walkFolder(rootPath, context) {
-  const fsApi = context.fs || fs;
-  let fileCount = 0;
-  let sizeBytes = 0;
-  let skipped = 0;
-  let timedOut = false;
-
-  async function walk() {
-    const stack = [rootPath];
-    while (stack.length > 0) {
-      if (hasTimedOut(context)) {
-        timedOut = true;
-        break;
-      }
-
-      const current = stack.pop();
-      let entries;
+  emit(event) {
+    this.updatedAt = Date.now();
+    for (const listener of this.listeners) {
       try {
-        entries = await fsApi.readdir(current, { withFileTypes: true });
+        listener(event);
       } catch {
-        skipped += 1;
-        continue;
+        // A broken SSE client must never break the scan.
       }
-
-      const outcomes = await mapLimit(entries, 32, async (dirent) => {
-        if (hasTimedOut(context)) return { kind: 'timeout' };
-
-        const fullPath = path.join(current, dirent.name);
-        if (typeof dirent.isSymbolicLink === 'function' && dirent.isSymbolicLink()) {
-          return { kind: 'ignored' };
-        }
-        if (typeof dirent.isDirectory === 'function' && dirent.isDirectory()) {
-          let stat;
-          try {
-            stat = await fsApi.lstat(fullPath);
-          } catch {
-            return { kind: 'skipped' };
-          }
-          if (stat.isSymbolicLink()) return { kind: 'ignored' };
-          if (typeof stat.isReparsePoint === 'function' && stat.isReparsePoint()) return { kind: 'ignored' };
-          return { kind: 'directory', path: fullPath };
-        }
-
-        let stat;
-        try {
-          stat = await fsApi.lstat(fullPath);
-        } catch {
-          return { kind: 'skipped' };
-        }
-
-        if (stat.isSymbolicLink()) return { kind: 'ignored' };
-        if (typeof stat.isReparsePoint === 'function' && stat.isReparsePoint()) return { kind: 'ignored' };
-        if (stat.isDirectory()) return { kind: 'directory', path: fullPath };
-        if (stat.isFile()) return { kind: 'file', size: stat.size };
-        return { kind: 'ignored' };
-      });
-
-      if (hasTimedOut(context)) {
-        timedOut = true;
-        break;
-      }
-
-      for (const outcome of outcomes) {
-        if (outcome.kind === 'timeout') {
-          timedOut = true;
-          break;
-        }
-        if (outcome.kind === 'skipped') {
-          skipped += 1;
-        } else if (outcome.kind === 'directory') {
-          stack.push(outcome.path);
-        } else if (outcome.kind === 'file') {
-          fileCount += 1;
-          sizeBytes += outcome.size;
-        }
-      }
-      if (timedOut) break;
     }
   }
 
-  const outcome = await raceDeadline(context, walk);
-  if (outcome.timedOut) {
-    timedOut = true;
+  get expired() {
+    return this.status !== 'scanning' && Date.now() - this.updatedAt > SESSION_TTL_MS;
   }
-
-  const skipRatio = fileCount === 0 ? (skipped > 0 ? 1 : 0) : skipped / fileCount;
-  const partial = timedOut || skipRatio > 0.10;
-  return { fileCount, sizeBytes, skipped, timedOut, partial };
 }
 
-async function scanFolder(folder, context) {
-  const fsApi = context.fs || fs;
-  const start = context.now();
-
-  if (hasTimedOut(context) || isAborted(context)) {
-    return makeEntry(folder, 'partial', 0, 0, 'timeout');
+class SessionStore {
+  constructor() {
+    this.sessions = new Map();
   }
 
-  const rootOutcome = await raceDeadline(context, () => fsApi.lstat(folder.path));
-  if (rootOutcome.timedOut) {
-    return makeEntry(folder, 'partial', 0, 0, 'timeout');
+  create(root) {
+    this.evict();
+    const id = crypto.randomBytes(9).toString('hex');
+    const session = new ScanSession(id, root);
+    this.sessions.set(id, session);
+    return session;
   }
 
-  try {
-    if (rootOutcome.error) throw rootOutcome.error;
-    const rootStat = rootOutcome.value;
-    if (!rootStat.isDirectory() ||
-        rootStat.isSymbolicLink() ||
-        (typeof rootStat.isReparsePoint === 'function' && rootStat.isReparsePoint())) {
-      return makeEntry(folder, 'not_found');
+  get(id) {
+    const session = this.sessions.get(String(id));
+    if (!session) return null;
+    if (session.expired) {
+      this.sessions.delete(session.id);
+      return null;
     }
-  } catch (error) {
-    const elapsed = context.now() - start;
-    if (isNotFound(error.code)) {
-      console.warn(`${folder.path} not_found ${error.code || 'not_found'} ${elapsed}ms`);
-      return makeEntry(folder, 'not_found');
-    }
-    if (isAccessDenied(error.code)) {
-      console.warn(`${folder.path} access_denied ${error.code || 'access_denied'} ${elapsed}ms`);
-      return makeEntry(folder, 'access_denied', 0, 0, 'access_denied');
-    }
-    console.warn(`${folder.path} partial ${error.code || error.message || 'scan_error'} ${elapsed}ms`);
-    return makeEntry(folder, 'partial');
+    return session;
   }
 
-  const result = await walkFolder(folder.path, context);
-  const status = result.partial ? 'partial' : 'ready';
-  if (status !== 'ready') {
-    const elapsed = context.now() - start;
-    const reason = result.timedOut ? 'timeout' : `skipped=${result.skipped}`;
-    console.warn(`${folder.path} ${status} ${reason} ${elapsed}ms`);
-    return makeEntry(folder, status, result.fileCount, result.sizeBytes, reason);
+  evict() {
+    for (const [id, session] of this.sessions) {
+      if (session.expired) this.sessions.delete(id);
+    }
+    if (this.sessions.size < MAX_SESSIONS) return;
+    const finished = [...this.sessions.values()]
+      .filter((s) => s.status !== 'scanning')
+      .sort((a, b) => a.updatedAt - b.updatedAt);
+    while (this.sessions.size >= MAX_SESSIONS && finished.length > 0) {
+      this.sessions.delete(finished.shift().id);
+    }
   }
-  return makeEntry(folder, status, result.fileCount, result.sizeBytes);
 }
 
-async function scanAll(options = {}) {
-  const folders = await getWhitelist(options);
-  const now = typeof options.now === 'function' ? options.now : Date.now;
-  const context = {
+
+
+function runScan(session, options) {
+  const startedAt = Date.now();
+  analyze(session.root.path, {
     fs: options.fs,
-    now,
-    startedAt: now(),
-    timeoutMs: resolveTimeoutMs(options),
-    abortSignal: options.abortSignal || null,
-  };
-  const entries = [];
-  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+    signal: session.abortController.signal,
+    timeoutMs: options.timeoutMs,
+    displayRoot: session.root.displayPath,
+    concurrency: options.concurrency,
+    registry: session.registry,
+    onRoot: (root) => {
+      if (!session.liveRoot) session.liveRoot = root;
+    },
+    onChild: (parent, child) => {
+      // Tree APIs can now return completed children before the entire scan ends.
+      session.totals.sizeBytes = session.liveRoot ? session.liveRoot.sizeBytes : 0;
+      session.totals.fileCount = session.liveRoot ? session.liveRoot.fileCount : 0;
+      session.totals.subfolderCount = session.liveRoot ? session.liveRoot.subfolderCount : 0;
+      session.emit({ type: 'tree', nodeId: parent.id });
+    },
+    onProgress: (progress) => {
+      session.progress = progress;
+      session.emit({ type: 'progress', progress });
+    },
+  })
+    .then((result) => {
+      session.result = result;
+      session.totals = { sizeBytes: result.totals.sizeBytes, fileCount: result.totals.fileCount, subfolderCount: result.totals.subfolderCount };
+      session.status = result.cancelled ? 'cancelled' : 'ready';
+      session.emit({
+        type: result.cancelled ? 'cancelled' : 'done',
+        status: session.status,
+        totals: session.totals,
+        partial: result.partial,
+        timedOut: result.timedOut,
+        skipped: result.skipped,
+        durationMs: Date.now() - startedAt,
+      });
+    })
+    .catch((error) => {
+      session.status = 'error';
+      session.error = isNotFound(error.code) ? 'not_found' : (error.code || error.message || 'scan_error');
+      session.emit({ type: 'error', error: session.error });
+    })
+    .finally(() => {
+      session.updatedAt = Date.now();
+    });
+}
 
-  for (const folder of folders) {
-    if (hasTimedOut(context) || isAborted(context)) {
-      const aborted = makeEntry(folder, 'partial', 0, 0, 'timeout');
-      entries.push(aborted);
-      if (onProgress) onProgress(aborted, entries.slice());
-      continue;
-    }
-    const entry = await scanFolder(folder, context);
-    entries.push(entry);
-    if (onProgress) onProgress(entry, entries.slice());
-  }
+// ---------------------------------------------------------------------------
+// Tree serialization
+// ---------------------------------------------------------------------------
 
-  const partial = entries.some((entry) => (
-    entry.status === 'partial' || entry.status === 'access_denied'
-  ));
+/**
+ * Serialize a directory's direct children with percentages relative to the
+ * parent and to the drive root. Sorting is done client-side, so we return
+ * everything (children lists are bounded by real folder fan-out).
+ */
+function childrenPayload(session, node) {
+  const parentTotal = node.sizeBytes || 0;
+  const driveTotal = session.totals.sizeBytes || 0;
+  const children = (node.children || [])
+    .map((child) => {
+      const summary = toSummary(child);
+      summary.percentParent = percentOf(child.sizeBytes, parentTotal);
+      summary.percentDrive = percentOf(child.sizeBytes, driveTotal);
+      return summary;
+    })
+    .sort((a, b) => b.sizeBytes - a.sizeBytes);
   return {
-    entries,
-    scannedAt: nowIsoWithLocalOffset(),
-    partial,
+    parent: {
+      ...toSummary(node),
+      percentParent: 100,
+      percentDrive: percentOf(node.sizeBytes, driveTotal),
+    },
+    children,
+    driveTotalBytes: driveTotal,
+    driveTotalHuman: sizeHuman(driveTotal),
   };
 }
 
-function safeStaticPath(urlPath) {
-  const pathname = decodeURIComponent(urlPath.split('?')[0]);
-  const requested = pathname === '/' ? '/index.html' : pathname;
-  const normalized = path.normalize(requested).replace(/^([/\\])+/, '');
-  const resolved = path.resolve(PUBLIC_ROOT, normalized);
-  const rootWithSep = PUBLIC_ROOT.endsWith(path.sep) ? PUBLIC_ROOT : `${PUBLIC_ROOT}${path.sep}`;
-  if (resolved !== PUBLIC_ROOT && !resolved.startsWith(rootWithSep)) {
-    return null;
+function treemapPayload(session, node, depth, limit) {
+  const driveTotal = session.totals.sizeBytes || 0;
+  const out = [];
+  const walk = (current, currentDepth, parentId) => {
+    if (currentDepth > depth) return;
+    const kids = (current.children || []).filter((child) => child.type === 'dir')
+      .concat((current.children || []).filter((child) => child.type === 'file'))
+      .filter((child) => child.sizeBytes > 0)
+      .sort((a, b) => b.sizeBytes - a.sizeBytes)
+      .slice(0, limit);
+    for (const child of kids) {
+      out.push({
+        id: child.id,
+        parentId,
+        name: child.name,
+        displayPath: child.displayPath,
+        type: child.type,
+        sizeBytes: child.sizeBytes,
+        percentDrive: percentOf(child.sizeBytes, driveTotal),
+        risk: child.risk || 'unknown',
+        depth: currentDepth,
+      });
+      if (child.type === 'dir' && currentDepth < depth) {
+        walk(child, currentDepth + 1, child.id);
+      }
+    }
+  };
+  walk(node, 1, node.id);
+  return { rootId: node.id, driveTotalBytes: driveTotal, nodes: out };
+}
+
+// ---------------------------------------------------------------------------
+// Routing helpers
+// ---------------------------------------------------------------------------
+
+async function readJsonBody(req, maxBytes = 8 * 1024) {
+  let body = '';
+  for await (const chunk of req) {
+    body += chunk;
+    if (Buffer.byteLength(body) > maxBytes) {
+      throw Object.assign(new Error('request_too_large'), { statusCode: 413 });
+    }
   }
-  return resolved;
+  try {
+    return JSON.parse(body || '{}');
+  } catch {
+    throw Object.assign(new Error('invalid_json'), { statusCode: 400 });
+  }
+}
+
+function validSameOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  try {
+    return new URL(origin).host === req.headers.host;
+  } catch {
+    return false;
+  }
 }
 
 function contentType(filePath) {
-  const ext = path.extname(filePath).toLowerCase();
-  switch (ext) {
+  switch (path.extname(filePath).toLowerCase()) {
     case '.html': return 'text/html; charset=utf-8';
     case '.css': return 'text/css; charset=utf-8';
     case '.js': return 'text/javascript; charset=utf-8';
@@ -610,6 +298,16 @@ function contentType(filePath) {
   }
 }
 
+function safeStaticPath(urlPath) {
+  const pathname = decodeURIComponent(urlPath.split('?')[0]);
+  const requested = pathname === '/' ? '/index.html' : pathname;
+  const normalized = path.normalize(requested).replace(/^([/\\])+/, '');
+  const resolved = path.resolve(PUBLIC_ROOT, normalized);
+  const rootWithSep = PUBLIC_ROOT.endsWith(path.sep) ? PUBLIC_ROOT : `${PUBLIC_ROOT}${path.sep}`;
+  if (resolved !== PUBLIC_ROOT && !resolved.startsWith(rootWithSep)) return null;
+  return resolved;
+}
+
 async function serveStatic(req, res) {
   let filePath;
   try {
@@ -618,12 +316,10 @@ async function serveStatic(req, res) {
     json(res, 400, { error: 'Permintaan tidak valid.' });
     return;
   }
-
   if (!filePath) {
     json(res, 404, { error: 'Tidak ditemukan.' });
     return;
   }
-
   try {
     const stat = await fs.lstat(filePath);
     if (!stat.isFile()) {
@@ -647,129 +343,100 @@ async function serveStatic(req, res) {
   }
 }
 
-async function readJsonBody(req, maxBytes = 16 * 1024) {
-  let body = '';
-  for await (const chunk of req) {
-    body += chunk;
-    if (Buffer.byteLength(body) > maxBytes) throw Object.assign(new Error('request_too_large'), { statusCode: 413 });
-  }
-  try { return JSON.parse(body || '{}'); } catch { throw Object.assign(new Error('invalid_json'), { statusCode: 400 }); }
-}
-
-function validSameOrigin(req) {
-  const origin = req.headers.origin;
-  if (!origin) return true;
-  try {
-    const parsed = new URL(origin);
-    return parsed.host === req.headers.host;
-  } catch { return false; }
-}
+// ---------------------------------------------------------------------------
+// Server
+// ---------------------------------------------------------------------------
 
 function createServer(options = {}) {
-  const previewTokens = new Map();
-  const auditFile = options.auditFile || process.env.CLEANUP_AUDIT_FILE || '/tmp/cleanup-audit.jsonl';
-  return http.createServer(async (req, res) => {
-    try {
-      const reqUrl = new URL(req.url || '/', 'http://127.0.0.1');
-      const routePath = reqUrl.pathname;
+  const store = new SessionStore();
 
-      if (routePath === '/api/cleanup/targets') {
-        if (req.method !== 'GET') { json(res, 405, { error: 'Metode tidak diizinkan.' }); return; }
-        json(res, 200, { targets: cleanupTargets.getCleanableTargets().map(({ internalPath, ...target }) => target) });
-        return;
+  const handleApi = async (req, res, routePath, reqUrl) => {
+    // GET /api/roots — available drives
+    if (routePath === '/api/roots') {
+      if (req.method !== 'GET') return json(res, 405, { error: 'Metode tidak diizinkan.' });
+      const roots = createRoots(options);
+      return json(res, 200, {
+        roots: roots.map((root) => ({
+          id: root.id,
+          name: root.name,
+          displayPath: root.displayPath,
+          letter: root.letter,
+        })),
+      });
+    }
+
+    // GET /api/guides, GET /api/guides/:id
+    if (routePath === '/api/guides') {
+      if (req.method !== 'GET') return json(res, 405, { error: 'Metode tidak diizinkan.' });
+      return json(res, 200, {
+        guides: GUIDES.map((g) => ({
+          id: g.id,
+          title: g.name,
+          risk: g.risk,
+          description: g.description,
+          commands: [...(g.cmdCommands || []), ...(g.psCommands || [])],
+        })),
+      });
+    }
+    const guideMatch = routePath.match(/^\/api\/guides\/([a-z0-9-]+)$/);
+    if (guideMatch) {
+      if (req.method !== 'GET') return json(res, 405, { error: 'Metode tidak diizinkan.' });
+      const g = getGuide(guideMatch[1]);
+      if (!g) return json(res, 404, { error: 'Panduan tidak ditemukan.' });
+      return json(res, 200, {
+        id: g.id,
+        title: g.name,
+        risk: g.risk,
+        description: g.description,
+        commands: [...(g.cmdCommands || []), ...(g.psCommands || [])],
+      });
+    }
+
+    // POST /api/scans — start a scan for a root id
+    if (routePath === '/api/scans') {
+      if (req.method !== 'POST') return json(res, 405, { error: 'Metode tidak diizinkan.' });
+      if (!validSameOrigin(req)) return json(res, 403, { error: 'Origin tidak diizinkan.' });
+      const body = await readJsonBody(req);
+      const roots = createRoots(options);
+      const root = roots.find((item) => item.id === body.rootId);
+      if (!root) return json(res, 400, { error: 'Root tidak dikenal.' });
+      const session = store.create(root);
+      runScan(session, options);
+      return json(res, 202, {
+        scanId: session.id,
+        root: { id: root.id, name: root.name, displayPath: root.displayPath },
+      });
+    }
+
+    const scanMatch = routePath.match(/^\/api\/scans\/([a-f0-9]+)(\/.*)?$/);
+    if (scanMatch) {
+      const session = store.get(scanMatch[1]);
+      if (!session) return json(res, 404, { error: 'Sesi pemindaian tidak ditemukan.' });
+      const sub = scanMatch[2] || '';
+
+      if (sub === '' || sub === '/status') {
+        if (req.method !== 'GET') return json(res, 405, { error: 'Metode tidak diizinkan.' });
+        return json(res, 200, {
+          scanId: session.id,
+          status: session.status,
+          root: { id: session.root.id, name: session.root.name, displayPath: session.root.displayPath },
+          totals: session.totals,
+          totalsHuman: sizeHuman(session.totals.sizeBytes),
+          partial: session.result ? session.result.partial : false,
+          error: session.error,
+          progress: session.progress,
+        });
       }
 
-      if (routePath === '/api/cleanup/preview') {
-        if (req.method !== 'POST') { json(res, 405, { error: 'Metode tidak diizinkan.' }); return; }
-        if (!validSameOrigin(req)) { json(res, 403, { error: 'Origin tidak diizinkan.' }); return; }
-        const body = await readJsonBody(req);
-        if (!body || Object.keys(body).some(k => k !== 'targets') || !Array.isArray(body.targets) || body.targets.length < 1 || body.targets.length > 20 || body.targets.some(id => typeof id !== 'string')) {
-          json(res, 400, { error: 'Permintaan hanya boleh berisi daftar target ID.' }); return;
-        }
-        const checked = cleanupTargets.validateTargetIds(body.targets);
-        if (!checked.valid) { json(res, 400, { error: 'Target tidak dikenal atau tidak aktif.', invalidTargets: checked.invalid }); return; }
-        const conflict = cleanupJobs.checkTargetLocks(body.targets);
-        if (conflict) { json(res, 409, { error: 'Target is currently being cleaned.', targetId: conflict }); return; }
-        try {
-          const result = await cleanupEngine.preview(body.targets, options.cleanupOptions || {});
-          const confirmationToken = cleanupJobs.createConfirmationToken(body.targets);
-          previewTokens.set(confirmationToken, result);
-          json(res, 200, {
-            targets: result.targets.map(item => ({ ...item, name: cleanupTargets.findTargetById(item.targetId).name, displayPath: cleanupTargets.getDisplayPath(item.targetId) })),
-            eligibleFiles: result.totalEligibleFiles,
-            eligibleDirectories: result.totalEligibleDirectories,
-            estimatedBytes: result.totalEstimatedBytes,
-            skippedRecentFiles: result.totalSkippedRecent,
-            skippedProtectedFiles: result.totalSkippedProtected,
-            confirmationToken,
-          });
-        } catch (error) { json(res, 400, { error: error.message === 'ENOENT' ? 'Target tidak tersedia.' : 'Preview gagal; root tidak dapat divalidasi.' }); }
-        return;
+      if (sub === '/cancel') {
+        if (req.method !== 'POST') return json(res, 405, { error: 'Metode tidak diizinkan.' });
+        if (!validSameOrigin(req)) return json(res, 403, { error: 'Origin tidak diizinkan.' });
+        session.abortController.abort();
+        return json(res, 202, { scanId: session.id, status: 'cancelling' });
       }
 
-      if (routePath === '/api/cleanup/jobs') {
-        if (req.method !== 'POST') { json(res, 405, { error: 'Metode tidak diizinkan.' }); return; }
-        if (!validSameOrigin(req)) { json(res, 403, { error: 'Origin tidak diizinkan.' }); return; }
-        const body = await readJsonBody(req);
-        if (!body || Object.keys(body).some(k => !['targets', 'confirmationToken'].includes(k)) || !Array.isArray(body.targets) || body.targets.length < 1 || body.targets.length > 20 || body.targets.some(id => typeof id !== 'string') || typeof body.confirmationToken !== 'string') {
-          json(res, 400, { error: 'Diperlukan target ID dan confirmation token.' }); return;
-        }
-        const checked = cleanupTargets.validateTargetIds(body.targets);
-        if (!checked.valid) { json(res, 400, { error: 'Target tidak dikenal atau tidak aktif.', invalidTargets: checked.invalid }); return; }
-        const preview = previewTokens.get(body.confirmationToken);
-        if (!preview || !cleanupJobs.consumeConfirmationToken(body.confirmationToken, body.targets)) { json(res, 403, { error: 'Confirmation token tidak valid atau kedaluwarsa.' }); return; }
-        previewTokens.delete(body.confirmationToken);
-        const created = cleanupJobs.createJob(body.targets);
-        if (!created.jobId) { json(res, 409, { error: 'Target is currently being cleaned.', targetId: created.conflictTarget }); return; }
-        const job = cleanupJobs.getJob(created.jobId);
-        cleanupJobs.startJob(created.jobId);
-        (async () => {
-          try {
-            let processedFiles = 0;
-            const result = await cleanupEngine.execute(body.targets, {
-              ...(options.cleanupOptions || {}),
-              signal: job.abortController.signal,
-              onProgress: progress => {
-                const next = Number(progress.filesDeleted || 0);
-                const delta = Math.max(0, next - processedFiles);
-                processedFiles = next;
-                cleanupJobs.updateProgress(created.jobId, { processedFiles: delta, bytesDeleted: progress.bytesDeleted });
-              },
-            });
-            cleanupJobs.completeJob(created.jobId, result);
-            const audit = { timestamp: new Date().toISOString(), targetIds: body.targets, filesDeleted: result.totals.filesDeleted, directoriesDeleted: result.totals.directoriesDeleted, bytesReclaimed: result.totals.bytesDeleted, skipped: { recent: result.totals.skippedRecent, locked: result.totals.skippedLocked, accessDenied: result.totals.accessDenied, protected: result.totals.protected }, errors: result.totals.failed, durationMs: result.totals.durationMs };
-            try { await fs.appendFile(auditFile, `${JSON.stringify(audit)}\n`, { mode: 0o600 }); } catch (error) { console.warn('Audit log unavailable:', error.code || error.message); }
-          } catch (error) {
-            if (error.name === 'AbortError') cleanupJobs.updateProgress(created.jobId, { status: 'cancelled', completedAt: Date.now() });
-            else cleanupJobs.failJob(created.jobId, error);
-            cleanupJobs.releaseLocks(body.targets);
-          }
-        })();
-        json(res, 202, { jobId: created.jobId });
-        return;
-      }
-
-      const jobMatch = routePath.match(/^\/api\/cleanup\/jobs\/([a-f0-9]+)(\/cancel)?$/);
-      if (jobMatch) {
-        const job = cleanupJobs.getJob(jobMatch[1]);
-        if (!job) { json(res, 404, { error: 'Job tidak ditemukan.' }); return; }
-        if (jobMatch[2]) {
-          if (req.method !== 'POST') { json(res, 405, { error: 'Metode tidak diizinkan.' }); return; }
-          if (!validSameOrigin(req)) { json(res, 403, { error: 'Origin tidak diizinkan.' }); return; }
-          cleanupJobs.cancelJob(jobMatch[1]);
-        } else if (req.method !== 'GET') { json(res, 405, { error: 'Metode tidak diizinkan.' }); return; }
-        json(res, 200, cleanupJobs.getJobSummary(jobMatch[1]));
-        return;
-      }
-
-      if (routePath === '/api/scan/stream') {
-        if (req.method !== 'GET') {
-          json(res, 405, { error: 'Metode tidak diizinkan.' });
-          return;
-        }
-        const abortController = new AbortController();
-        const onClose = () => abortController.abort();
-        res.on('close', onClose);
+      if (sub === '/events') {
+        if (req.method !== 'GET') return json(res, 405, { error: 'Metode tidak diizinkan.' });
         res.writeHead(200, {
           ...securityHeaders(),
           'content-type': 'text/event-stream; charset=utf-8',
@@ -777,38 +444,97 @@ function createServer(options = {}) {
           connection: 'keep-alive',
         });
         res.flushHeaders();
-        try {
-          const body = await scanAll({
-            ...options,
-            abortSignal: abortController.signal,
-            onProgress(entry) {
-              if (!abortController.signal.aborted && !res.destroyed) {
-                res.write(`event: folder\ndata: ${JSON.stringify(entry)}\n\n`);
-              }
-            },
-          });
-          if (!abortController.signal.aborted && !res.destroyed) {
-            res.write(`event: done\ndata: ${JSON.stringify(body)}\n\n`);
-            res.end();
-          }
-        } finally {
-          res.off('close', onClose);
-        }
-        return;
-      }
-
-      if (routePath === '/api/scan') {
-        if (req.method !== 'GET') {
-          json(res, 405, { error: 'Metode tidak diizinkan.' });
+        const send = (event) => {
+          if (res.destroyed) return;
+          res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+        };
+        if (session.status !== 'scanning') {
+          send({ type: session.status === 'ready' ? 'done' : session.status, status: session.status, totals: session.totals, partial: session.result ? session.result.partial : false });
+          res.end();
           return;
         }
-        const body = await scanAll(options);
-        json(res, 200, body);
+        send({ type: 'progress', progress: session.progress });
+        const unsubscribe = session.subscribe((event) => {
+          send(event);
+          if (event.type === 'done' || event.type === 'cancelled' || event.type === 'error') {
+            unsubscribe();
+            res.end();
+          }
+        });
+        const onClose = () => {
+          unsubscribe();
+        };
+        res.on('close', onClose);
         return;
       }
 
+      if (sub === '/tree' || sub.startsWith('/tree/')) {
+        if (req.method !== 'GET') return json(res, 405, { error: 'Metode tidak diizinkan.' });
+        if (session.status === 'error') return json(res, 500, { error: 'Pemindaian gagal.' });
+        const nodeIdParam = sub.startsWith('/tree/') ? sub.slice('/tree/'.length) : 'root';
+        const node = nodeIdParam === 'root' ? (session.liveRoot || (session.result && session.result.root)) : session.registry.get(nodeIdParam);
+        if (!node) return json(res, 404, { error: 'Node tidak ditemukan.' });
+        if (node.type !== 'dir') return json(res, 400, { error: 'Node bukan folder.' });
+        return json(res, 200, {
+          ...childrenPayload(session, node),
+          status: session.status,
+          partial: session.status === 'scanning' || (session.result && session.result.partial),
+        });
+      }
+
+      if (sub === '/treemap') {
+        if (req.method !== 'GET') return json(res, 405, { error: 'Metode tidak diizinkan.' });
+        if (session.status === 'error') return json(res, 500, { error: 'Pemindaian gagal.' });
+        const nodeIdParam = reqUrl.searchParams.get('node') || 'root';
+        const depth = Math.min(Math.max(Number(reqUrl.searchParams.get('depth')) || 2, 1), 4);
+        const limit = Math.min(Math.max(Number(reqUrl.searchParams.get('limit')) || 12, 1), 40);
+        const node = nodeIdParam === 'root'
+          ? (session.liveRoot || (session.result && session.result.root))
+          : session.registry.get(nodeIdParam);
+        if (!node) return json(res, 404, { error: 'Node tidak ditemukan.' });
+        return json(res, 200, {
+          ...treemapPayload(session, node, depth, limit),
+          status: session.status,
+          partial: session.status === 'scanning' || (session.result && session.result.partial),
+        });
+      }
+
+      if (sub === '/summary') {
+        if (req.method !== 'GET') return json(res, 405, { error: 'Metode tidak diizinkan.' });
+        if (session.status === 'scanning') return json(res, 409, { error: 'Pemindaian belum selesai.' });
+        if (session.status === 'error') return json(res, 500, { error: 'Pemindaian gagal.' });
+        const root = session.result.root;
+        const driveTotal = session.totals.sizeBytes || 0;
+        return json(res, 200, {
+          totals: session.totals,
+          totalsHuman: sizeHuman(session.totals.sizeBytes),
+          partial: session.result.partial,
+          timedOut: session.result.timedOut,
+          skipped: session.result.skipped,
+          durationMs: session.result.durationMs,
+          extensions: session.result.extensions.slice(0, 30).map((row) => ({
+            ...row,
+            sizeHuman: sizeHuman(row.sizeBytes),
+            percent: percentOf(row.sizeBytes, driveTotal),
+          })),
+          topFolders: collectTop(root, 'dir', driveTotal, 12),
+          topFiles: collectTop(root, 'file', driveTotal, 12),
+        });
+      }
+
+      return json(res, 404, { error: 'Endpoint tidak ditemukan.' });
+    }
+
+    return json(res, 404, { error: 'Endpoint tidak ditemukan.' });
+  };
+
+  return http.createServer(async (req, res) => {
+    try {
+      const reqUrl = new URL(req.url || '/', 'http://127.0.0.1');
+      const routePath = reqUrl.pathname;
+
       if (routePath.startsWith('/api/')) {
-        json(res, 404, { error: 'Endpoint tidak ditemukan.' });
+        await handleApi(req, res, routePath, reqUrl);
         return;
       }
 
@@ -819,17 +545,44 @@ function createServer(options = {}) {
       await serveStatic(req, res);
     } catch (error) {
       const statusCode = typeof error.statusCode === 'number' ? error.statusCode : 500;
-      if (statusCode === 413) {
-        json(res, 413, { error: 'Permintaan terlalu besar.' });
-        return;
-      }
-      if (statusCode === 400) {
-        json(res, 400, { error: 'Format permintaan tidak valid.' });
-        return;
-      }
-      json(res, 500, { error: 'Terjadi kesalahan server.' });
+      if (statusCode === 413) return json(res, 413, { error: 'Permintaan terlalu besar.' });
+      if (statusCode === 400) return json(res, 400, { error: 'Format permintaan tidak valid.' });
+      return json(res, 500, { error: 'Terjadi kesalahan server.' });
     }
   });
+}
+
+/**
+ * Flatten the tree and return the largest nodes of a given type, annotated with
+ * their share of the drive. Dirs exclude the root itself so the list stays
+ * actionable.
+ */
+function collectTop(root, type, driveTotal, limit) {
+  const rows = [];
+  const walk = (node, isRoot) => {
+    if (!(isRoot && type === 'dir')) {
+      if (node.type === type) {
+        rows.push({
+          id: node.id,
+          name: node.name,
+          displayPath: node.displayPath,
+          sizeBytes: node.sizeBytes,
+          fileCount: node.fileCount,
+          subfolderCount: node.subfolderCount,
+          lastModified: node.lastModified,
+          percentDrive: percentOf(node.sizeBytes, driveTotal),
+          risk: node.risk || 'unknown',
+          guideId: node.guideId || null,
+        });
+      }
+    }
+    if (node.type === 'dir') {
+      for (const child of node.children || []) walk(child, false);
+    }
+  };
+  walk(root, true);
+  rows.sort((a, b) => b.sizeBytes - a.sizeBytes);
+  return rows.slice(0, limit).map((row) => ({ ...row, sizeHuman: sizeHuman(row.sizeBytes) }));
 }
 
 function resolveHost(options = {}) {
@@ -854,7 +607,7 @@ if (require.main === module) {
   start()
     .then((server) => {
       const address = server.address();
-      console.log(`Cleanup Web Scanner running at http://${resolveHost()}:${address.port}/`);
+      console.log(`Disk Usage Analyzer (read-only) berjalan di http://${resolveHost()}:${address.port}/`);
     })
     .catch((error) => {
       console.error(`Gagal menjalankan server: ${error.message}`);
@@ -869,13 +622,11 @@ module.exports = {
   createServer,
   start,
   resolveHost,
-  scanAll,
-  walkFolder,
-  getWhitelist,
-  parseScanRoots,
-  applyHostMount,
-  toContainerPath,
+  collectTop,
+  childrenPayload,
+  treemapPayload,
+  ScanSession,
+  SessionStore,
+  nodeId,
   toDisplayPath,
-  nowIsoWithLocalOffset,
-  resolveTimeoutMs,
 };

@@ -1,7 +1,8 @@
 {
-  "name": "cleanup-web-scanner",
-  "version": "1.0.0",
+  "name": "disk-usage-analyzer",
+  "version": "2.0.0",
   "private": true,
+  "description": "Read-only WinDirStat-style disk usage analyzer (no delete endpoints, no shell execution).",
   "scripts": {
     "test": "node --test",
     "start": "node server.js"
