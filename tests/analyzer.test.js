@@ -44,6 +44,31 @@ test('walkDir aggregates recursively and classifies display paths', async (t) =>
   assert.deepEqual(result.extensions.map((r) => r.extension), ['.bin', '.log', '.txt', '.md']);
 });
 
+test('analyze reports zero totals for an empty root', async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'dua-empty-'));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+
+  const result = await analyze(base, { timeoutMs: 30000 });
+  assert.equal(result.totals.sizeBytes, 0);
+  assert.equal(result.totals.fileCount, 0);
+  assert.equal(result.partial, false);
+  assert.deepEqual(result.root.children, []);
+});
+
+test('analyze rejects a missing root with ENOENT', async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'dua-missing-'));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const missing = path.join(base, 'does-not-exist');
+
+  // Baseline behavior: analyze() rejects at the root lstat with ENOENT.
+  // server.js lines 183-187 maps that rejection to session error 'not_found';
+  // this unit test intentionally characterizes analyze(), not the server.
+  await assert.rejects(analyze(missing, { timeoutMs: 30000 }), (error) => {
+    assert.equal(error.code, 'ENOENT');
+    return true;
+  });
+});
+
 test('analyze maps real mount paths onto Windows display paths', async (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'dua-map-'));
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
